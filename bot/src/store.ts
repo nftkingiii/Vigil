@@ -34,6 +34,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS rescues_by_borrower ON rescues (borrower, status);
 `);
 
+// Added after launch: databases created earlier lack these columns.
+for (const ddl of [`ALTER TABLE rescues ADD COLUMN warning TEXT`]) {
+  try {
+    db.exec(ddl);
+  } catch (e) {
+    if (!/duplicate column/i.test(String(e))) throw e;
+  }
+}
+
 export interface Watch {
   chatId: number;
   borrower: string;
@@ -53,6 +62,8 @@ export interface Rescue {
   status: "armed" | "executed" | "void" | "failed";
   detail: string | null;
   txHash: string | null;
+  /** Codes of the issues last reported to the borrower (rescueHealth.issueKey), "" when none. */
+  warning: string;
   createdAt: string;
 }
 
@@ -77,6 +88,7 @@ const toRescue = (r: Row): Rescue => ({
   status: String(r.status) as Rescue["status"],
   detail: r.detail == null ? null : String(r.detail),
   txHash: r.tx_hash == null ? null : String(r.tx_hash),
+  warning: r.warning == null ? "" : String(r.warning),
   createdAt: String(r.created_at),
 });
 
@@ -133,6 +145,9 @@ export const rescues = {
   },
   history(limit = 20): Rescue[] {
     return db.prepare(`SELECT * FROM rescues ORDER BY id DESC LIMIT ?`).all(limit).map(toRescue);
+  },
+  setWarning(id: number, warning: string) {
+    db.prepare(`UPDATE rescues SET warning = ?, updated_at = datetime('now') WHERE id = ?`).run(warning, id);
   },
   finish(id: number, status: Rescue["status"], detail: string | null, txHash: string | null = null) {
     db.prepare(`UPDATE rescues SET status = ?, detail = ?, tx_hash = ?, updated_at = datetime('now') WHERE id = ?`)

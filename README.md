@@ -27,6 +27,8 @@ Price alerts don't cover the second risk. Most of the time the fix is a small re
 | **Redemption queue** | Your place in Mezo's redemption order (`SortedTroves`, ascending nominal ICR, skipping loans under 110%) and how much MUSD gets redeemed before yours. |
 | **Interest drift** | Days until simple interest alone takes you to 110% at a flat price. |
 | **Stale price** | Mezo's `PriceFeed` reverts when its oracle is over 60 s old. Vigil reports "paused" and never acts on a guessed price. |
+| **Recovery Mode** | Read from Mezo's `TroveManager.checkRecoveryMode` every minute. Vigil alerts when Mezo enters or leaves it and explains what changes: liquidation stays at 110%, repaying still works, but collateral withdrawals, closing and refinancing are blocked. |
+| **Rescue checks** | Every minute Vigil checks each armed rescue can still succeed: reserve at least the signed amount, trigger on, and a repay that keeps net debt above Mezo's `minNetDebt` (read on-chain, since governance can change it). It tells you when one can't, and again when it's fixed. Expired, nonce-moved or closed-loan rescues are voided with the reason. |
 | **Pre-signed rescue** | You keep a MUSD reserve in `VigilReserve` and sign Mezo's own `RepayMUSD` message once. If your ratio falls below the trigger you set, the keeper submits exactly that repay. |
 
 ## Why the rescue is safe

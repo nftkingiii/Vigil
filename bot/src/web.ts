@@ -6,7 +6,8 @@ import { config } from "./config.ts";
 import { keeperStatus } from "./keeper.ts";
 import { addresses, client, mezoTestnet, repayTypedData, sigOpsAbi, vigilAbi } from "./mezo.ts";
 import { latestSnapshot, monitorStatus } from "./monitor.ts";
-import { maxRepay, position, repayToReach } from "./risk.ts";
+import { rescueIssues } from "./rescueHealth.ts";
+import { maxRepay, musd, position, repayToReach } from "./risk.ts";
 import { rescues, watches } from "./store.ts";
 import { notifyBorrower, telegramEnabled } from "./telegram.ts";
 
@@ -89,13 +90,27 @@ app.get("/api/position/:address", async (c) => {
       snapshotAt: snap?.at ?? null,
       price: snap ? (snap.price.ok ? { ok: true, value: snap.price.price } : snap.price) : null,
       position: pos,
-      maxRepay: pos ? maxRepay(pos.debt) : null,
+      maxRepay: pos && snap ? maxRepay(pos.debt, snap.system) : null,
+      system: snap?.system ?? null,
       repayTo150: pos && price ? repayToReach(pos.coll, pos.debt, price, 15n * 10n ** 17n) : null,
       reserve,
       trigger,
       nonce,
       musdBalance,
       latestRescue: latest && { ...latest, signature: undefined },
+      // Same checks the keeper runs each minute: why the armed rescue can't succeed, if it can't.
+      rescueIssues:
+        latest?.status === "armed" && snap
+          ? rescueIssues({
+              amount: latest.amount,
+              deadline: latest.deadline,
+              now: Math.floor(Date.now() / 1000),
+              reserve,
+              trigger,
+              debt: pos?.debt ?? null,
+              limits: snap.system,
+            })
+          : [],
     }),
   );
 });
@@ -148,8 +163,11 @@ app.post("/api/rescue", async (c) => {
 
   const snap = latestSnapshot();
   const pos = snap?.price.ok ? position(snap.troves, borrower, snap.price.price) : null;
-  if (pos && amt > maxRepay(pos.debt)) {
-    return c.json({ error: "amount would take the loan below Mezo's 1,800 MUSD minimum debt" }, 400);
+  if (snap && pos && amt > maxRepay(pos.debt, snap.system)) {
+    return c.json(
+      { error: `amount would take the loan below Mezo's ${musd(snap.system.minNetDebt)} minimum net debt; the most Mezo allows now is ${musd(maxRepay(pos.debt, snap.system))}` },
+      400,
+    );
   }
 
   const id = rescues.arm({ borrower, amount: amt, nonce: n, deadline: Number(dl), signature });

@@ -73,9 +73,12 @@ test("alert levels: ok, watch, danger (halfway to 110%), liquidatable", () => {
   assert.equal(lv(95_000), "liquidatable"); // 105%
 });
 
-test("repay limits respect Mezo's 1,800 MUSD minimum net debt plus 200 gas compensation", () => {
-  assert.equal(maxRepay(e18(5_000)), e18(3_000));
-  assert.equal(maxRepay(e18(1_500)), 0n);
+test("repay limits follow Mezo's on-chain minimum net debt plus gas compensation", () => {
+  const testnet = { minNetDebt: e18(1_800), gasCompensation: e18(200) }; // read on 2026-11-01
+  assert.equal(maxRepay(e18(5_000), testnet), e18(3_000));
+  assert.equal(maxRepay(e18(1_500), testnet), 0n);
+  // Governance can change minNetDebt (proposeMinNetDebt); the limit moves with it.
+  assert.equal(maxRepay(e18(5_000), { minNetDebt: e18(1_000), gasCompensation: e18(200) }), e18(3_800));
   const need = repayToReach(e18(1), e18(80_000), e18(100_000), e18(1.5));
   assert.ok(Math.abs(Number(need) / 1e18 - (80_000 - 100_000 / 1.5)) < 1e-6);
 });

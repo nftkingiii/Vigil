@@ -119,9 +119,12 @@ export function levelFor(p: Position, alertIcr: bigint): Level {
   return "ok";
 }
 
-/** Largest repay that keeps net debt at or above Mezo's minimum (1,800 MUSD + 200 gas comp). */
-export function maxRepay(debt: bigint, minNetDebt = 1_800n * WAD, gasCompensation = 200n * WAD): bigint {
-  const floor = minNetDebt + gasCompensation;
+/**
+ * Largest repay Mezo accepts: BorrowerOperations requires net debt (debt minus gas compensation) to
+ * stay at or above minNetDebt after a repay. Both values come from Mezo on-chain (snapshot.system).
+ */
+export function maxRepay(debt: bigint, limits: { minNetDebt: bigint; gasCompensation: bigint }): bigint {
+  const floor = limits.minNetDebt + limits.gasCompensation;
   return debt > floor ? debt - floor : 0n;
 }
 

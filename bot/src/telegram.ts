@@ -4,8 +4,9 @@ import { getAddress, isAddress } from "viem";
 import { config } from "./config.ts";
 import { esc, helpText, positionCard } from "./format.ts";
 import { latestSnapshot } from "./monitor.ts";
-import { levelFor, parsePercent, pct, position } from "./risk.ts";
-import { watches } from "./store.ts";
+import { levelFor, musd, parsePercent, pct, position } from "./risk.ts";
+import { BLOCKING } from "./rescueHealth.ts";
+import { rescues, watches } from "./store.ts";
 
 export const DEFAULT_ALERT_ICR = 15n * 10n ** 17n; // 150%
 const MIN_ALERT_ICR = 115n * 10n ** 16n; // 115%
@@ -33,6 +34,14 @@ function parseAlert(arg: string | undefined): bigint | null | "invalid" {
   return v;
 }
 
+function rescueLine(borrower: string): string {
+  const r = rescues.latest(borrower);
+  if (!r || r.status !== "armed") return `\n\n<b>Rescue</b>: none armed. /rescue to set one up.`;
+  const blocked = r.warning.split(",").some((c) => BLOCKING.has(c));
+  const until = new Date(r.deadline * 1000).toISOString().slice(0, 10);
+  return `\n\n<b>Rescue</b>: ${musd(r.amount)} armed until ${until}${blocked ? " ❌ <b>can't succeed right now</b>, see the last Vigil message" : " ✅"}`;
+}
+
 async function statusFor(ctx: Context, borrower: string, alertIcr: bigint) {
   const snap = latestSnapshot();
   if (!snap) return ctx.reply("Vigil is still taking its first snapshot of Mezo. Try again in a minute.");
@@ -48,7 +57,7 @@ async function statusFor(ctx: Context, borrower: string, alertIcr: bigint) {
       html,
     );
   }
-  return ctx.reply(positionCard(p, snap.price.price, alertIcr, levelFor(p, alertIcr)), html);
+  return ctx.reply(positionCard(p, snap.price.price, alertIcr, levelFor(p, alertIcr), snap.system) + rescueLine(borrower), html);
 }
 
 bot.command("start", (ctx) =>

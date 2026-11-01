@@ -14,6 +14,7 @@ export const mezoTestnet = defineChain({
 export const addresses = {
   musd: "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503",
   troveManager: "0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0",
+  borrowerOperations: "0xCdF7028ceAB81fA0C6971208e83fa7872994beE5", // BorrowerOperationsSignatures.borrowerOperations()
   borrowerOperationsSignatures: "0xD757e3646AF370b15f32EB557F0F8380Df7D639e",
   priceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366",
   vigilReserve: config.vigilReserve,
@@ -28,6 +29,16 @@ export const troveManagerAbi = parseAbi([
   "function getTroveInterestRate(address borrower) view returns (uint16)",
   "function getTroveStatus(address borrower) view returns (uint8)",
   "function getCurrentICR(address borrower, uint256 price) view returns (uint256)",
+  "function MCR() view returns (uint256)",
+  "function CCR() view returns (uint256)",
+  "function getTCR(uint256 price) view returns (uint256)",
+  "function checkRecoveryMode(uint256 price) view returns (bool)",
+]);
+
+/** minNetDebt is set by Mezo governance (proposeMinNetDebt / approveMinNetDebt), so read it, never assume it. */
+export const borrowerOpsAbi = parseAbi([
+  "function minNetDebt() view returns (uint256)",
+  "function MUSD_GAS_COMPENSATION() view returns (uint256)",
 ]);
 
 export const sigOpsAbi = parseAbi([

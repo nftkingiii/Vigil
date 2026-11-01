@@ -293,15 +293,18 @@ async function load(a) {
     $("s-rank").textContent = p.redemptionRank ? `#${p.redemptionRank} of ${p.redeemableTroves}` : "not redeemable";
     $("s-buffer").textContent = p.redemptionRank ? `${fmt(p.redemptionBuffer, 0)} MUSD redeemed before yours` : "under 110%";
     $("s-days").textContent = p.daysToMcrFlat == null ? "–" : Math.round(p.daysToMcrFlat).toLocaleString("en-US");
-    if (d.maxRepay) $("hint").textContent = `Largest repay Mezo allows for this loan: ${fmt(d.maxRepay, 0)} MUSD (net debt can't go under 1,800).` + (d.repayTo150 && BigInt(d.repayTo150) > 0n ? ` About ${fmt(d.repayTo150, 0)} MUSD would lift it to 150% today.` : "");
+    if (d.maxRepay) $("hint").textContent = `Largest repay Mezo allows for this loan: ${fmt(d.maxRepay, 0)} MUSD (net debt can't go under Mezo's ${fmt(d.system.minNetDebt, 0)} MUSD minimum, read on-chain).` + (d.repayTo150 && BigInt(d.repayTo150) > 0n ? ` About ${fmt(d.repayTo150, 0)} MUSD would lift it to 150% today.` : "");
+    if (d.system && d.system.recoveryMode) $("pos-sub").textContent += ` · Mezo is in Recovery Mode (system ratio ${pct(d.system.tcr, 1)}): no collateral withdrawals, closing or refinancing until it ends.`;
   }
   $("s-reserve").textContent = fmt(d.reserve) + " MUSD";
   $("s-wallet").textContent = `wallet holds ${fmt(d.musdBalance)} MUSD`;
   $("s-trigger").textContent = BigInt(d.trigger) ? pct(d.trigger, 1) : "off";
   const lr = d.latestRescue;
-  $("s-rescue").textContent = lr ? lr.status : "none";
+  const blocked = (d.rescueIssues || []).filter((i) => i.blocking);
+  $("s-rescue").textContent = lr ? (lr.status === "armed" && blocked.length ? "armed, can't succeed" : lr.status) : "none";
+  if (d.rescueIssues && d.rescueIssues.length) log("Rescue check:\n" + d.rescueIssues.map((i) => "• " + i.text).join("\n"));
   $("s-rescue-h").textContent = lr ? `${fmt(lr.amount, 0)} MUSD · nonce ${lr.nonce}${lr.status === "armed" ? " · until " + new Date(lr.deadline * 1000).toLocaleDateString() : ""}` : "sign one in the Rescue tab";
-  log(`Loaded ${target}.`);
+  if (!d.rescueIssues || !d.rescueIssues.length) log(`Loaded ${target}.`);
 }
 function setLevel(cls, text) { const el = $("pos-level"); el.className = "pill " + cls; el.textContent = text; }
 

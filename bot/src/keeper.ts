@@ -4,8 +4,9 @@ import { BaseError, ContractFunctionRevertedError, createWalletClient, http, typ
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { config } from "./config.ts";
 import { short } from "./format.ts";
-import { addresses, client, explorerTx, mezoTestnet, sigOpsAbi, vigilAbi } from "./mezo.ts";
-import { musd, pct } from "./risk.ts";
+import { addresses, client, explorerTx, mezoTestnet, sigOpsAbi, troveManagerAbi, TROVE_ACTIVE, vigilAbi } from "./mezo.ts";
+import { BLOCKING, issueKey, rescueIssues } from "./rescueHealth.ts";
+import { debtOf, musd, pct } from "./risk.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { rescues } from "./store.ts";
 import { notifyBorrower } from "./telegram.ts";
@@ -37,8 +38,20 @@ function revertReason(e: unknown): string {
   return String(e);
 }
 
+/** TroveManager.Status: why a loan is no longer active. */
+const CLOSED: Record<number, string> = {
+  0: "the loan doesn't exist",
+  2: "the loan was closed",
+  3: "the loan was liquidated",
+  4: "the loan was fully redeemed",
+};
+
+/**
+ * Every snapshot: check each armed rescue can still succeed and tell the borrower when it can't,
+ * then submit the ones below their trigger. Checks run even while the price is stale; submitting
+ * never does.
+ */
 export async function runKeeper(snap: Snapshot) {
-  if (!config.keeperEnabled || !snap.price.ok) return; // never act on a stale price
   const now = Math.floor(Date.now() / 1000);
 
   for (const r of rescues.armed()) {
@@ -49,12 +62,53 @@ export async function runKeeper(snap: Snapshot) {
       continue;
     }
 
-    const nonce = await client.readContract({ address: addresses.borrowerOperationsSignatures, abi: sigOpsAbi, functionName: "getNonce", args: [borrower] });
+    const [nonce, reserve, trigger, status] = await client.multicall({
+      allowFailure: false,
+      contracts: [
+        { address: addresses.borrowerOperationsSignatures, abi: sigOpsAbi, functionName: "getNonce", args: [borrower] },
+        { address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [borrower] },
+        { address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [borrower] },
+        { address: addresses.troveManager, abi: troveManagerAbi, functionName: "getTroveStatus", args: [borrower] },
+      ],
+    });
     if (nonce !== r.nonce) {
       rescues.finish(r.id, "void", `nonce moved (${r.nonce} → ${nonce})`);
       await notifyBorrower(borrower, `⚠️ Your pre-signed rescue is void: you signed another Mezo action since, which used up its nonce. Sign a new one with /rescue.`);
       continue;
     }
+    if (Number(status) !== TROVE_ACTIVE) {
+      const why = CLOSED[Number(status)] ?? `loan status ${status}`;
+      rescues.finish(r.id, "void", why);
+      await notifyBorrower(borrower, `⚠️ Your pre-signed rescue for <code>${short(borrower)}</code> is void: ${why}. Your reserve stays yours; withdraw it on the web page.`);
+      continue;
+    }
+
+    const trove = snap.troves.find((t) => t.borrower.toLowerCase() === borrower.toLowerCase());
+    const issues = rescueIssues({
+      amount: r.amount,
+      deadline: r.deadline,
+      now,
+      reserve,
+      trigger,
+      debt: trove ? debtOf(trove) : null,
+      limits: snap.system,
+    });
+    const key = issueKey(issues);
+    if (key !== r.warning) {
+      rescues.setWarning(r.id, key);
+      const fresh = issues.filter((i) => !r.warning.split(",").includes(i.code));
+      if (fresh.length > 0) {
+        const blocked = issues.some((i) => i.blocking);
+        await notifyBorrower(
+          borrower,
+          `${blocked ? "❌ <b>Your rescue can't succeed right now</b>" : "⏳ <b>Rescue reminder</b>"} for <code>${short(borrower)}</code>:\n${fresh.map((i) => `• ${i.text}`).join("\n")}`,
+        );
+      } else if (!issues.some((i) => i.blocking) && r.warning.split(",").some((c) => BLOCKING.has(c))) {
+        await notifyBorrower(borrower, `✅ Your pre-signed rescue for <code>${short(borrower)}</code> can succeed again.`);
+      }
+    }
+    if (issues.some((i) => i.blocking)) continue;
+    if (!config.keeperEnabled || !snap.price.ok) continue; // never act on a stale price
 
     let ready = false;
     try {

@@ -1,13 +1,25 @@
 import type { Address } from "viem";
-import { addresses, client, priceFeedAbi, troveManagerAbi, TROVE_ACTIVE } from "./mezo.ts";
+import { addresses, borrowerOpsAbi, client, priceFeedAbi, troveManagerAbi, TROVE_ACTIVE } from "./mezo.ts";
 import type { Trove } from "./risk.ts";
 
 export type PriceState = { ok: true; price: bigint } | { ok: false; reason: string };
+
+/** Mezo's own system settings, read every snapshot instead of hardcoded. */
+export interface MezoSystem {
+  mcr: bigint;
+  ccr: bigint;
+  minNetDebt: bigint;
+  gasCompensation: bigint;
+  /** null when the price is unavailable: Recovery Mode can't be known without one. */
+  recoveryMode: boolean | null;
+  tcr: bigint | null;
+}
 
 export interface Snapshot {
   at: Date;
   block: bigint;
   price: PriceState;
+  system: MezoSystem;
   troves: Trove[];
 }
 
@@ -83,7 +95,29 @@ export async function readTrovesOf(owners: Address[]): Promise<Trove[]> {
   return troves;
 }
 
+export async function readSystem(price: PriceState): Promise<MezoSystem> {
+  const [mcr, ccr, minNetDebt, gasCompensation] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { address: addresses.troveManager, abi: troveManagerAbi, functionName: "MCR" },
+      { address: addresses.troveManager, abi: troveManagerAbi, functionName: "CCR" },
+      { address: addresses.borrowerOperations, abi: borrowerOpsAbi, functionName: "minNetDebt" },
+      { address: addresses.borrowerOperations, abi: borrowerOpsAbi, functionName: "MUSD_GAS_COMPENSATION" },
+    ],
+  });
+  if (!price.ok) return { mcr, ccr, minNetDebt, gasCompensation, recoveryMode: null, tcr: null };
+  const [recoveryMode, tcr] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { address: addresses.troveManager, abi: troveManagerAbi, functionName: "checkRecoveryMode", args: [price.price] },
+      { address: addresses.troveManager, abi: troveManagerAbi, functionName: "getTCR", args: [price.price] },
+    ],
+  });
+  return { mcr, ccr, minNetDebt, gasCompensation, recoveryMode, tcr };
+}
+
 export async function takeSnapshot(): Promise<Snapshot> {
   const [block, price, troves] = await Promise.all([client.getBlockNumber(), readPrice(), readTroves()]);
-  return { at: new Date(), block, price, troves };
+  const system = await readSystem(price);
+  return { at: new Date(), block, price, system, troves };
 }
