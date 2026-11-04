@@ -18,7 +18,20 @@ Wave 1 feedback asked for a new job for MUSD (a redemption-triggered rescue), Me
 | Fork tests | 17/17 pass (2026-11-04), 5 new: rescue near the front of the real queue, `Rescued` reason, guard not reached, no guard rescue under 110%, ratio trigger still fires with a guard set |
 | Gas | Full 60-trove walk: 1,808,087 gas (`eth_estimateGas` of `debtAhead` on testnet). Block gas limit 10,000,000 |
 
-v1 (`0x9829…cf3E`, below) stays deployed for its Wave 1 history. The service and web page now use v2.
+v1 (`0x9829…cf3E`, below) stays deployed for its Wave 1 history.
+
+### VigilReserve v3: fixed rescue fee (current)
+
+| Item | Value |
+|---|---|
+| Address | [`0x29FB8a330cD5c114B30F0C69b50Bb459dE023885`](https://explorer.test.mezo.org/address/0x29FB8a330cD5c114B30F0C69b50Bb459dE023885) |
+| Deploy tx | [`0x93161107…8d92`](https://explorer.test.mezo.org/tx/0x9316110761e903497d61008a50fd9e91d8fb0a4f98d08ce6f456a7d802988d92), block 16,573,144, status success |
+| Source | Verified on the explorer (Blockscout) |
+| Read back | `VERSION()` 3, `FEE_BPS()` 50, `FEE_CAP()` 25e18, `feeFor(300e18)` 1.5e18 |
+| What's new | Each executed rescue pays its submitter 0.5% of the amount, at most 25 MUSD, from the same reserve. The reserve must cover amount + fee. Constants, no owner. `Rescued` logs the fee. Everything else as v2 |
+| Fork tests | 19/19 pass (2026-11-04): the 17 above plus the fee schedule and "reserve must cover amount plus fee"; the allowed-rescue tests now also check the submitter received the fee |
+
+The service, web page and `scripts/keeper.ts` use v3. The redemption-guard proof below ran on v2, which has the same guard logic without the fee.
 
 ### Live redemption-guard rescue: 2026-11-04
 

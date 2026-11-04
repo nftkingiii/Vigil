@@ -23,7 +23,7 @@ test("withdrawn reserve and switched-off trigger block the rescue", () => {
   const issues = rescueIssues({ ...base, reserve: e18(100), trigger: 0n });
   assert.equal(issueKey(issues), "reserve_low,trigger_off");
   assert.ok(issues.every((i) => i.blocking));
-  assert.match(issues[0]!.text, /200 MUSD more/);
+  assert.match(issues[0]!.text, /201\.50 MUSD more/); // 300 repay + 1.50 fee - 100 held
 });
 
 test("a repay that would break Mezo's minimum net debt is flagged with the current maximum", () => {
@@ -33,6 +33,11 @@ test("a repay that would break Mezo's minimum net debt is flagged with the curre
   assert.match(issues[0]!.text, /250 MUSD/);
   // A higher on-chain minimum blocks a repay that fits today's.
   assert.equal(issueKey(rescueIssues({ ...base, limits: { minNetDebt: e18(2_100), gasCompensation: e18(200) } })), "below_min_debt");
+});
+
+test("the reserve must cover the repay plus the fee", () => {
+  assert.equal(issueKey(rescueIssues({ ...base, reserve: e18(300) })), "reserve_low");
+  assert.equal(issueKey(rescueIssues({ ...base, reserve: e18(302) })), "");
 });
 
 test("a redemption guard alone keeps the rescue on", () => {

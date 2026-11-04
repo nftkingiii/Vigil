@@ -4,7 +4,7 @@ import { getAddress, isAddress } from "viem";
 import { config } from "./config.ts";
 import { esc, helpText, positionCard } from "./format.ts";
 import { latestSnapshot } from "./monitor.ts";
-import { levelFor, musd, parsePercent, pct, position } from "./risk.ts";
+import { btc as fmtBtc, levelFor, musd, parseAmount, parsePercent, pct, planLoan, position, usd } from "./risk.ts";
 import { BLOCKING } from "./rescueHealth.ts";
 import { rescues, watches } from "./store.ts";
 
@@ -62,7 +62,7 @@ async function statusFor(ctx: Context, borrower: string, alertIcr: bigint) {
 
 bot.command("start", (ctx) =>
   ctx.reply(
-    `👁 <b>Vigil</b> guards MUSD loans on Mezo.\n\nSend <code>/watch 0xYourAddress</code> to start. Vigil alerts you before liquidation <i>and</i> before redemption, which most borrowers don't see coming.\n\n/help for everything else.`,
+    `👁 <b>Vigil</b> guards MUSD loans on Mezo.\n\nSend <code>/watch 0xYourAddress</code> to start. No loan yet? <code>/plan 0.05 2500</code> shows what borrowing 2,500 MUSD against 0.05 BTC would look like first. Vigil alerts you before liquidation <i>and</i> before redemption, which most borrowers don't see coming.\n\n/help for everything else.`,
     html,
   ),
 );
@@ -106,6 +106,38 @@ bot.command("unwatch", (ctx) => {
   if (addr && !isAddress(addr)) return ctx.reply("Usage: /unwatch [0xAddress]");
   const n = watches.remove(ctx.chat.id, addr || undefined);
   return ctx.reply(n ? `Stopped watching ${n} address${n > 1 ? "es" : ""}.` : "You weren't watching that.");
+});
+
+bot.command("plan", async (ctx) => {
+  const [btcArg, musdArg] = ctx.match.trim().split(/\s+/);
+  const coll = parseAmount(btcArg);
+  const borrow = parseAmount(musdArg);
+  if (!coll || !borrow) return ctx.reply("Usage: /plan <BTC collateral> <MUSD to borrow>\nExample: /plan 0.05 2500");
+  const snap = latestSnapshot();
+  if (!snap) return ctx.reply("Vigil is still taking its first snapshot of Mezo. Try again in a minute.");
+  if (!snap.price.ok) return ctx.reply(`⏸ Mezo's price feed is unavailable (${snap.price.reason}). Vigil won't plan on a guessed price.`);
+  const p = planLoan(snap.troves, { coll, borrow, price: snap.price.price, system: snap.system });
+  const pos = p.position;
+  const s = p.suggestion;
+  const lines = [
+    `🧮 <b>Planned loan</b>: ${fmtBtc(coll)} collateral, ${musd(borrow)} borrowed`,
+    p.ok ? `✅ Mezo would open it.` : `❌ Mezo would refuse it: ${p.problems.join(" ")}`,
+    ``,
+    `Total debt ${musd(p.debt)} (incl. ${musd(p.borrowingFee, 2)} borrowing fee and ${musd(snap.system.gasCompensation)} gas compensation)`,
+    `Collateral ratio <b>${pct(pos.icr, 1)}</b>`,
+    `<b>Liquidation</b>: BTC at ${usd(pos.liquidationPrice)} (now ${usd(snap.price.price)}, ${pct(pos.dropToLiquidation)} away)`,
+    pos.redemptionRank !== null
+      ? `<b>Redemption queue</b>: would be #${pos.redemptionRank} of ${pos.redeemableTroves}, with ${musd(pos.redemptionBuffer)} redeemed before it`
+      : `<b>Redemption queue</b>: not redeemable (under 110%)`,
+    pos.daysToMcrFlat !== null ? `<b>Interest drift</b>: ${Math.round(pos.daysToMcrFlat).toLocaleString("en-US")} days to 110% at ${(snap.system.newLoanRateBips / 100).toFixed(2)}% a year, BTC flat` : ``,
+    ``,
+    `<b>Suggested Vigil setup</b>`,
+    `• Ratio trigger ${pct(s.trigger, 0)}${s.guard ? `, redemption guard ${musd(s.guard)}` : ""}`,
+    `• Signed repay ${musd(s.repay)}, reserve ${musd(s.reserve, 2)} (incl. ${musd(s.fee, 2)} rescue fee)`,
+    ``,
+    `Open it on testnet.mezo.org, then /watch your 0x address. Plan on the web: ${config.publicUrl}/?tab=plan&btc=${btcArg}&musd=${musdArg}`,
+  ];
+  return ctx.reply(lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n"), html);
 });
 
 bot.command("rescue", (ctx) => {
@@ -159,6 +191,7 @@ async function registerCommands() {
     { command: "status", description: "Your positions now" },
     { command: "alerts", description: "Change your alert line" },
     { command: "rescue", description: "Set up a pre-signed rescue" },
+    { command: "plan", description: "Plan a new MUSD loan before you borrow" },
     { command: "unwatch", description: "Stop watching" },
     { command: "help", description: "How Vigil works" },
   ]);

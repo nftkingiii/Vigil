@@ -122,6 +122,9 @@ export const watches = {
   count(): number {
     return Number((db.prepare(`SELECT COUNT(*) AS n FROM watches`).get() as Row).n);
   },
+  borrowers(): number {
+    return Number((db.prepare(`SELECT COUNT(DISTINCT borrower) AS n FROM watches`).get() as Row).n);
+  },
 };
 
 export const rescues = {
@@ -142,6 +145,17 @@ export const rescues = {
       .prepare(`SELECT * FROM rescues WHERE borrower = ? ORDER BY id DESC LIMIT 1`)
       .get(borrower.toLowerCase());
     return row ? toRescue(row as Row) : null;
+  },
+  stats(): { armed: number; executed: number; repaid: bigint; borrowers: number } {
+    const rows = db.prepare(`SELECT status, amount, borrower FROM rescues`).all() as Row[];
+    let repaid = 0n;
+    for (const r of rows) if (r.status === "executed") repaid += BigInt(String(r.amount));
+    return {
+      armed: rows.filter((r) => r.status === "armed").length,
+      executed: rows.filter((r) => r.status === "executed").length,
+      repaid,
+      borrowers: new Set(rows.map((r) => String(r.borrower))).size,
+    };
   },
   history(limit = 20): Rescue[] {
     return db.prepare(`SELECT * FROM rescues ORDER BY id DESC LIMIT ?`).all(limit).map(toRescue);

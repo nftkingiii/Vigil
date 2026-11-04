@@ -78,6 +78,7 @@
 
   <div class="tabs" role="tablist" aria-label="Vigil">
     <button role="tab" id="tab-position" aria-controls="panel-position" aria-selected="true">Position</button>
+    <button role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="false" tabindex="-1">Plan a loan</button>
     <button role="tab" id="tab-reserve" aria-controls="panel-reserve" aria-selected="false" tabindex="-1">Reserve</button>
     <button role="tab" id="tab-rescue" aria-controls="panel-rescue" aria-selected="false" tabindex="-1">Rescue</button>
     <button role="tab" id="tab-log" aria-controls="panel-log" aria-selected="false" tabindex="-1">Log</button>
@@ -117,6 +118,47 @@
     </div>
   </section>
 
+  <!-- PLAN -->
+  <section role="tabpanel" id="panel-plan" aria-labelledby="tab-plan" hidden>
+    <div class="card">
+      <h2>Plan a MUSD loan before you borrow</h2>
+      <p class="sub">New to MUSD? See what a loan would look like on Mezo right now, before you open it: its ratio, the BTC price that liquidates it, where it would sit in the redemption queue among today's loans, and a Vigil setup that protects it. Mezo's fee, interest rate and minimums are read live from its contracts.</p>
+      <div class="row">
+        <div><label for="pl-btc">BTC collateral</label><input id="pl-btc" inputmode="decimal" placeholder="e.g. 0.05"></div>
+        <div><label for="pl-musd">MUSD to borrow</label><input id="pl-musd" inputmode="decimal" placeholder="e.g. 2500"></div>
+        <button id="plan">Plan</button>
+      </div>
+    </div>
+    <div id="plan-out" hidden>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <h2>This loan</h2><span id="pl-level" class="pill ok">Opens</span>
+        </div>
+        <p class="sub" id="pl-sub"></p>
+        <div class="grid" style="margin-top:10px">
+          <div class="stat"><div class="k">Collateral ratio</div><div class="v" id="pl-icr">–</div><div class="h">liquidation below 110%</div></div>
+          <div class="stat"><div class="k">Liquidated if BTC falls to</div><div class="v" id="pl-liq">–</div><div class="h" id="pl-drop"></div></div>
+          <div class="stat"><div class="k">Redemption queue</div><div class="v" id="pl-rank">–</div><div class="h" id="pl-buffer"></div></div>
+          <div class="stat"><div class="k">Interest drift</div><div class="v" id="pl-days">–</div><div class="h" id="pl-rate"></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Suggested Vigil setup</h2>
+        <div class="grid" style="margin-top:10px">
+          <div class="stat"><div class="k">Ratio trigger</div><div class="v" id="pl-trg">–</div><div class="h">halfway to 110%</div></div>
+          <div class="stat"><div class="k">Redemption guard</div><div class="v" id="pl-grd">–</div><div class="h" id="pl-grd-h">half the debt ahead today</div></div>
+          <div class="stat"><div class="k">Signed repay</div><div class="v" id="pl-rep">–</div><div class="h">restores today's ratio at the trigger</div></div>
+          <div class="stat"><div class="k">Reserve to keep</div><div class="v" id="pl-res">–</div><div class="h" id="pl-fee"></div></div>
+        </div>
+        <ol class="steps" style="margin-top:14px">
+          <li><b>Open the loan</b> on <a href="https://testnet.mezo.org" target="_blank" rel="noopener">testnet.mezo.org</a> with an EVM wallet.</li>
+          <li><b>Watch it</b>: send <span class="mono">/watch 0xYourAddress</span> to <a href="https://t.me/VigilMezoBot" target="_blank" rel="noopener">@VigilMezoBot</a>.</li>
+          <li><b>Protect it</b>: deposit the reserve, set the trigger and guard in the Reserve tab, then sign the rescue.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
   <!-- RESERVE -->
   <section role="tabpanel" id="panel-reserve" aria-labelledby="tab-reserve" hidden>
     <div class="card">
@@ -141,7 +183,7 @@
     </div>
     <div class="card">
       <h2>Redemption guard</h2>
-      <p class="sub">Redemptions take BTC from the lowest-ratio loans first, even healthy ones. With a guard set, a rescue can also run when less than this much MUSD of other debt sits ahead of your loan in Mezo's redemption queue. The contract walks the queue on-chain, the same way Mezo does. Repaying moves your loan back.</p>
+      <p class="sub">Redemptions take BTC from the lowest-ratio loans first, even healthy ones. With a guard set, a rescue can also run when less than this much MUSD of other debt sits ahead of your loan in Mezo's redemption queue. The contract walks the queue on-chain, the same way Mezo does, and checks the first 60 loans; a guard only fires once your loan is among them. Repaying moves your loan back.</p>
       <div class="row">
         <div><label for="grd">Guard (MUSD of debt ahead, 0 = off)</label><input id="grd" inputmode="decimal" placeholder="e.g. 50000"></div>
         <button id="setguard">Set guard</button>
@@ -156,7 +198,7 @@
       <p class="sub"><b>Needs an EVM wallet</b> (MetaMask, Rabby) that owns the loan. Loans opened with a Bitcoin wallet through Mezo Passport belong to a smart account, which can't produce the signature Mezo checks; alerts still work for those.</p>
       <p class="sub">You sign Mezo's own <span class="mono">RepayMUSD</span> message. Mezo checks the signature, so Vigil can't change the amount, the loan or the deadline. If you sign any other Mezo action later, this rescue becomes void.</p>
       <ol class="steps">
-        <li><b>Reserve</b> must cover the amount.</li>
+        <li><b>Reserve</b> must cover the amount plus the rescue fee: 0.5% of the amount, at most 25 MUSD, paid to whoever submits the rescue. It's fixed in the contract.</li>
         <li><b>Trigger or redemption guard</b> must be set.</li>
         <li><b>Sign</b> below. Vigil stores the signature and submits it only when your trigger or guard is hit.</li>
       </ol>
@@ -171,6 +213,14 @@
 
   <!-- LOG -->
   <section role="tabpanel" id="panel-log" aria-labelledby="tab-log" hidden>
+    <div class="card">
+      <h2>Vigil so far</h2>
+      <div class="grid" style="margin-top:10px">
+        <div class="stat"><div class="k">Loans watched</div><div class="v" id="st-watch">–</div><div class="h">distinct Mezo addresses</div></div>
+        <div class="stat"><div class="k">Rescues armed</div><div class="v" id="st-armed">–</div><div class="h">waiting on a trigger or guard</div></div>
+        <div class="stat"><div class="k">Rescues executed</div><div class="v" id="st-exec">–</div><div class="h" id="st-repaid">–</div></div>
+      </div>
+    </div>
     <div class="card">
       <h2>Rescue log</h2>
       <p class="sub">Every rescue Vigil has stored or submitted. Executed rescues link to the transaction.</p>
@@ -204,6 +254,7 @@ function selectTab(tab) {
     $(t.getAttribute("aria-controls")).hidden = !on;
   }
   if (tab.id === "tab-log") loadLog();
+  if (tab.id === "tab-plan" && $("pl-btc").value && $("pl-musd").value) guarded(plan);
 }
 tabs.forEach((t, i) => {
   t.addEventListener("click", () => selectTab(t));
@@ -320,6 +371,12 @@ async function load(a) {
 function setLevel(cls, text) { const el = $("pos-level"); el.className = "pill " + cls; el.textContent = text; }
 
 async function loadLog() {
+  fetch("/api/stats").then((r) => r.json()).then((s) => {
+    $("st-watch").textContent = s.watchedLoans;
+    $("st-armed").textContent = s.armedRescues;
+    $("st-exec").textContent = s.executedRescues;
+    $("st-repaid").textContent = `${fmt(s.musdRepaid, 0)} MUSD repaid`;
+  }).catch(() => {});
   const rows = await (await fetch("/api/rescues")).json();
   $("log-body").innerHTML = rows.length ? "" : `<tr><td colspan="5" class="muted">No rescues yet.</td></tr>`;
   for (const r of rows) {
@@ -358,6 +415,34 @@ $("settrigger").onclick = () => guarded(async () => {
   await send(CFG.vigilReserve, CFG.selectors.setTrigger + uint(wei), "Set trigger");
   await load(account);
 });
+async function plan() {
+  const btc = $("pl-btc").value.trim(), m = $("pl-musd").value.trim();
+  if (!/^\d+(\.\d+)?$/.test(btc) || !/^\d+(\.\d+)?$/.test(m)) throw new Error("Enter BTC collateral and MUSD to borrow, e.g. 0.05 and 2500.");
+  const r = await fetch(`/api/plan?btc=${encodeURIComponent(btc)}&musd=${encodeURIComponent(m)}`);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "Couldn't plan this loan");
+  const p = d.position, s = d.suggestion;
+  $("plan-out").hidden = false;
+  const lv = $("pl-level"); lv.className = "pill " + (d.ok ? "ok" : "bad"); lv.textContent = d.ok ? "Mezo would open it" : "Mezo would refuse it";
+  $("pl-sub").textContent = d.ok
+    ? `Total debt ${fmt(d.debt, 0)} MUSD: ${fmt(d.borrow, 0)} borrowed + ${fmt(d.borrowingFee, 2)} borrowing fee + ${fmt(d.system.gasCompensation, 0)} gas compensation. BTC $${fmt(d.price, 0)}.`
+    : d.problems.join(" ");
+  $("pl-icr").textContent = pct(p.icr, 1);
+  $("pl-liq").textContent = "$" + fmt(p.liquidationPrice, 0);
+  $("pl-drop").textContent = `${pct(p.dropToLiquidation)} below today's price`;
+  $("pl-rank").textContent = p.redemptionRank ? `#${p.redemptionRank} of ${p.redeemableTroves}` : "not redeemable";
+  $("pl-buffer").textContent = p.redemptionRank ? `${fmt(p.redemptionBuffer, 0)} MUSD would be redeemed before yours` : "";
+  $("pl-days").textContent = p.daysToMcrFlat == null ? "–" : Math.round(p.daysToMcrFlat).toLocaleString("en-US") + " days";
+  $("pl-rate").textContent = `to 110% at ${(d.system.newLoanRateBips / 100).toFixed(2)}% a year, BTC flat`;
+  $("pl-trg").textContent = pct(s.trigger, 0);
+  $("pl-grd").textContent = s.guard ? fmt(s.guard, 0) + " MUSD" : "–";
+  $("pl-grd-h").textContent = s.guard ? `half the debt ahead, at most the ${fmt(s.guardReach, 0)} MUSD the contract's 60-loan check can see` : "not needed: nothing redeemable ahead";
+  $("pl-rep").textContent = fmt(s.repay, 0) + " MUSD";
+  $("pl-res").textContent = fmt(s.reserve, 2) + " MUSD";
+  $("pl-fee").textContent = `repay + ${fmt(s.fee, 2)} MUSD rescue fee`;
+  log(d.ok ? "Plan ready. Nothing was sent; open the loan on Mezo when you're happy with it." : "Mezo would refuse this loan as entered: " + d.problems.join(" "));
+}
+$("plan").onclick = () => guarded(plan);
 $("setguard").onclick = () => guarded(async () => {
   const v = $("grd").value.trim();
   if (!/^\d+(\.\d+)?$/.test(v)) throw new Error("Enter an amount of MUSD, or 0 to switch the guard off.");
@@ -386,7 +471,9 @@ $("sign").onclick = () => guarded(async () => {
     },
     message,
   };
-  log("Sign the RepayMUSD message in your wallet…");
+  const fee = amount * BigInt(CFG.fee.bps) / 10000n > BigInt(CFG.fee.cap) ? BigInt(CFG.fee.cap) : amount * BigInt(CFG.fee.bps) / 10000n;
+  if (BigInt(current.reserve) < amount + fee) throw new Error(`Your reserve must cover ${fmt(amount + fee)} MUSD: the repay plus the ${fmt(fee)} MUSD rescue fee. Deposit more in the Reserve tab first.`);
+  log(`Rescue fee if it runs: ${fmt(fee)} MUSD from your reserve. Sign the RepayMUSD message in your wallet…`);
   const signature = await eth().request({ method: "eth_signTypedData_v4", params: [account, JSON.stringify(typed)] });
   const r = await fetch("/api/rescue", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...message, signature }) });
   const d = await r.json();
@@ -395,7 +482,11 @@ $("sign").onclick = () => guarded(async () => {
   await load(account);
 });
 
-const q = new URLSearchParams(location.search).get("borrower");
+const qs = new URLSearchParams(location.search);
+if (qs.get("btc")) $("pl-btc").value = qs.get("btc");
+if (qs.get("musd")) $("pl-musd").value = qs.get("musd");
+if (qs.get("tab") === "plan") selectTab($("tab-plan"));
+const q = qs.get("borrower");
 if (q) { $("addr").value = q; guarded(() => load(q)); }
 if (window.ethereum) window.ethereum.on?.("accountsChanged", (a) => { account = a[0] || null; if (account) guarded(() => load(account)); });
 </script>

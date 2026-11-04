@@ -1,5 +1,5 @@
 import type { Address } from "viem";
-import { addresses, borrowerOpsAbi, client, priceFeedAbi, troveManagerAbi, TROVE_ACTIVE } from "./mezo.ts";
+import { addresses, borrowerOpsAbi, client, interestRateManagerAbi, priceFeedAbi, troveManagerAbi, TROVE_ACTIVE } from "./mezo.ts";
 import type { Trove } from "./risk.ts";
 
 export type PriceState = { ok: true; price: bigint } | { ok: false; reason: string };
@@ -10,6 +10,10 @@ export interface MezoSystem {
   ccr: bigint;
   minNetDebt: bigint;
   gasCompensation: bigint;
+  /** Fee on new debt, 1e18 = 100% (BorrowerOperations.borrowingRate, 0.1% on testnet). */
+  borrowingRate: bigint;
+  /** Interest a new loan pays, basis points a year (InterestRateManager.interestRate). */
+  newLoanRateBips: number;
   /** null when the price is unavailable: Recovery Mode can't be known without one. */
   recoveryMode: boolean | null;
   tcr: bigint | null;
@@ -96,16 +100,19 @@ export async function readTrovesOf(owners: Address[]): Promise<Trove[]> {
 }
 
 export async function readSystem(price: PriceState): Promise<MezoSystem> {
-  const [mcr, ccr, minNetDebt, gasCompensation] = await client.multicall({
+  const [mcr, ccr, minNetDebt, gasCompensation, borrowingRate, rate] = await client.multicall({
     allowFailure: false,
     contracts: [
       { address: addresses.troveManager, abi: troveManagerAbi, functionName: "MCR" },
       { address: addresses.troveManager, abi: troveManagerAbi, functionName: "CCR" },
       { address: addresses.borrowerOperations, abi: borrowerOpsAbi, functionName: "minNetDebt" },
       { address: addresses.borrowerOperations, abi: borrowerOpsAbi, functionName: "MUSD_GAS_COMPENSATION" },
+      { address: addresses.borrowerOperations, abi: borrowerOpsAbi, functionName: "borrowingRate" },
+      { address: addresses.interestRateManager, abi: interestRateManagerAbi, functionName: "interestRate" },
     ],
   });
-  if (!price.ok) return { mcr, ccr, minNetDebt, gasCompensation, recoveryMode: null, tcr: null };
+  const base = { mcr, ccr, minNetDebt, gasCompensation, borrowingRate, newLoanRateBips: Number(rate) };
+  if (!price.ok) return { ...base, recoveryMode: null, tcr: null };
   const [recoveryMode, tcr] = await client.multicall({
     allowFailure: false,
     contracts: [
@@ -113,7 +120,7 @@ export async function readSystem(price: PriceState): Promise<MezoSystem> {
       { address: addresses.troveManager, abi: troveManagerAbi, functionName: "getTCR", args: [price.price] },
     ],
   });
-  return { mcr, ccr, minNetDebt, gasCompensation, recoveryMode, tcr };
+  return { ...base, recoveryMode, tcr };
 }
 
 export async function takeSnapshot(): Promise<Snapshot> {

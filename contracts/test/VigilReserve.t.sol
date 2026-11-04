@@ -24,6 +24,7 @@ contract VigilReserveForkTest is Test {
     uint256 constant TRIGGER = 1.5e18; // 150%
     uint256 constant RESERVE = 10_000e18;
     uint256 constant RESCUE = 5_000e18;
+    uint256 constant FEE = 25e18; // 0.5% of 5,000 = 25, at the cap
 
     VigilReserve vigil;
     MockAggregator oracle;
@@ -43,7 +44,8 @@ contract VigilReserveForkTest is Test {
         uint256 icrBefore,
         uint256 icrAfter,
         uint8 reason,
-        uint256 debtAhead
+        uint256 debtAhead,
+        uint256 fee
     );
 
     function setUp() public {
@@ -119,12 +121,13 @@ contract VigilReserveForkTest is Test {
         assertLt(icrBefore, TRIGGER);
 
         vm.expectEmit(true, true, false, false, address(vigil));
-        emit Rescued(borrower, keeper, RESCUE, 0, 0, 0, 0, 0);
+        emit Rescued(borrower, keeper, RESCUE, 0, 0, 0, 0, 0, 0);
         vm.prank(keeper);
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
 
-        assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE, "reserve spent");
-        assertEq(musd.balanceOf(address(vigil)), RESERVE - RESCUE, "MUSD burned from reserve");
+        assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE - FEE, "reserve spent: amount plus fee");
+        assertEq(musd.balanceOf(address(vigil)), RESERVE - RESCUE - FEE, "MUSD burned from reserve, fee paid out");
+        assertEq(musd.balanceOf(keeper), FEE, "submitter earns the fee");
         assertApproxEqAbs(_debt(), debtBefore - RESCUE, 1e18, "debt reduced by the signed amount");
         assertGt(_icr(), icrBefore, "ICR improved");
         assertEq(sigOps.getNonce(borrower), 1, "nonce consumed");
@@ -188,7 +191,7 @@ contract VigilReserveForkTest is Test {
     function test_Reject_ReserveTooSmall() public {
         (bytes memory sig, uint256 deadline) = _signNow(RESERVE + 1);
         _crash();
-        vm.expectRevert(abi.encodeWithSelector(VigilReserve.ReserveTooSmall.selector, RESERVE, RESERVE + 1));
+        vm.expectRevert(abi.encodeWithSelector(VigilReserve.ReserveTooSmall.selector, RESERVE, RESERVE + 1 + FEE));
         vigil.rescue(borrower, RESERVE + 1, deadline, sig, address(0), address(0));
     }
 
@@ -205,7 +208,12 @@ contract VigilReserveForkTest is Test {
         (bytes memory sig, uint256 deadline) = _signNow(RESCUE);
         _crash();
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
-        // Push the trove back under the trigger; the same signature must not work twice.
+        // Refill the reserve so only Mezo's nonce check stands in the way, push the trove back under
+        // the trigger: the same signature must not work twice.
+        vm.startPrank(borrower);
+        IERC20Approve(MezoTestnet.MUSD).approve(address(vigil), RESERVE);
+        vigil.deposit(borrower, RESERVE);
+        vm.stopPrank();
         oracle.set(int256(45_000e18));
         vm.expectRevert(bytes("BorrowerOperationsSignatures: Invalid signature"));
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
@@ -261,14 +269,14 @@ contract VigilReserveForkTest is Test {
         (bytes memory sig, uint256 deadline) = _signNow(RESCUE);
         uint256 debtBefore = _debt();
         vm.expectEmit(true, true, false, false, address(vigil));
-        emit Rescued(borrower, keeper, RESCUE, 0, 0, 0, 0, 0);
+        emit Rescued(borrower, keeper, RESCUE, 0, 0, 0, 0, 0, 0);
         vm.prank(keeper);
         uint256 gasBefore = gasleft();
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
         emit log_named_uint("rescue gas with queue walk", gasBefore - gasleft());
 
         assertApproxEqAbs(_debt(), debtBefore - RESCUE, 1e18, "debt reduced by the signed amount");
-        assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE, "reserve spent");
+        assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE - FEE, "reserve spent: amount plus fee");
     }
 
     function test_RedemptionGuard_RescueReportsReason() public {
@@ -281,13 +289,14 @@ contract VigilReserveForkTest is Test {
         (bytes memory sig, uint256 deadline) = _signNow(RESCUE);
         vm.recordLogs();
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
-        bytes32 topic = keccak256("Rescued(address,address,uint256,uint256,uint256,uint256,uint8,uint256)");
+        bytes32 topic = keccak256("Rescued(address,address,uint256,uint256,uint256,uint256,uint8,uint256,uint256)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool seen;
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].emitter != address(vigil) || logs[i].topics[0] != topic) continue;
-            (,,,, uint8 reason, uint256 loggedAhead) =
-                abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint8, uint256));
+            (,,,, uint8 reason, uint256 loggedAhead, uint256 fee) =
+                abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint8, uint256, uint256));
+            assertEq(fee, FEE);
             assertEq(reason, vigil.REASON_REDEMPTION());
             assertEq(loggedAhead, ahead);
             seen = true;
@@ -332,7 +341,26 @@ contract VigilReserveForkTest is Test {
         (bytes memory sig, uint256 deadline) = _signNow(RESCUE);
         _crash();
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
-        assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE);
+        assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE - FEE);
+    }
+
+    // ------------------------------------------------------------------ fee
+
+    function test_FeeIsHalfPercentCappedAt25() public view {
+        assertEq(vigil.feeFor(300e18), 1.5e18);
+        assertEq(vigil.feeFor(5_000e18), 25e18);
+        assertEq(vigil.feeFor(1_000_000e18), 25e18);
+        assertEq(vigil.feeFor(0), 0);
+    }
+
+    function test_Reject_ReserveMustCoverAmountPlusFee() public {
+        // Reserve exactly the amount: the fee doesn't fit, so the rescue can't run.
+        (bytes memory sig, uint256 deadline) = _signNow(RESERVE);
+        _crash();
+        (bool ok,,) = vigil.canRescue(borrower, RESERVE);
+        assertFalse(ok);
+        vm.expectRevert(abi.encodeWithSelector(VigilReserve.ReserveTooSmall.selector, RESERVE, RESERVE + FEE));
+        vigil.rescue(borrower, RESERVE, deadline, sig, address(0), address(0));
     }
 
     function test_TriggerMustBeAboveLiquidationLine() public {

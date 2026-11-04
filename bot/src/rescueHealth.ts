@@ -1,4 +1,4 @@
-import { maxRepay, musd } from "./risk.ts";
+import { maxRepay, musd, rescueFee } from "./risk.ts";
 
 /**
  * Why an armed rescue can't succeed right now, checked every snapshot so the borrower hears about it
@@ -29,11 +29,12 @@ export function rescueIssues(r: {
   limits: { minNetDebt: bigint; gasCompensation: bigint };
 }): RescueIssue[] {
   const out: RescueIssue[] = [];
-  if (r.reserve < r.amount) {
+  const needed = r.amount + rescueFee(r.amount);
+  if (r.reserve < needed) {
     out.push({
       code: "reserve_low",
       blocking: true,
-      text: `your Vigil reserve holds ${musd(r.reserve)} but the signed repay is ${musd(r.amount)}. Deposit at least ${musd(r.amount - r.reserve)} more.`,
+      text: `your Vigil reserve holds ${musd(r.reserve, 2)} but the rescue needs ${musd(needed, 2)} (the ${musd(r.amount)} repay plus the ${musd(rescueFee(r.amount), 2)} rescue fee). Deposit at least ${musd(needed - r.reserve, 2)} more.`,
     });
   }
   if (r.trigger === 0n && r.guard === 0n) {

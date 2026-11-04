@@ -7,7 +7,7 @@ import { keeperStatus } from "./keeper.ts";
 import { addresses, client, mezoTestnet, repayTypedData, sigOpsAbi, vigilAbi } from "./mezo.ts";
 import { latestSnapshot, monitorStatus } from "./monitor.ts";
 import { rescueIssues } from "./rescueHealth.ts";
-import { maxRepay, musd, pct, position, repayToReach } from "./risk.ts";
+import { FEE_BPS, FEE_CAP, maxRepay, musd, pct, parseAmount, planLoan, position, repayToReach, rescueFee } from "./risk.ts";
 import { rescues, watches } from "./store.ts";
 import { notifyBorrower, telegramEnabled } from "./telegram.ts";
 
@@ -33,6 +33,7 @@ const pageConfig = {
     setRedemptionGuard: toFunctionSelector("setRedemptionGuard(uint256)"),
   },
   bot: "VigilMezoBot",
+  fee: { bps: Number(FEE_BPS), cap: FEE_CAP.toString() },
 };
 
 const json = (v: unknown) => JSON.parse(JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x)));
@@ -119,6 +120,18 @@ app.get("/api/position/:address", async (c) => {
   );
 });
 
+/** A new loan, planned against today's troves and Mezo's live settings. Nothing is sent. */
+app.get("/api/plan", (c) => {
+  const coll = parseAmount(c.req.query("btc"));
+  const borrow = parseAmount(c.req.query("musd"));
+  if (!coll || !borrow) return c.json({ error: "btc and musd must be positive numbers, e.g. ?btc=0.05&musd=2500" }, 400);
+  const snap = latestSnapshot();
+  if (!snap) return c.json({ error: "Vigil is still taking its first snapshot of Mezo" }, 503);
+  if (!snap.price.ok) return c.json({ error: `Mezo's price feed is unavailable (${snap.price.reason}); Vigil won't plan on a guessed price` }, 503);
+  const plan = planLoan(snap.troves, { coll, borrow, price: snap.price.price, system: snap.system });
+  return c.json(json({ ...plan, borrow, coll, price: snap.price.price, system: snap.system }));
+});
+
 /** Store a borrower-signed RepayMUSD so the keeper can submit it below the trigger. */
 app.post("/api/rescue", async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -164,7 +177,10 @@ app.post("/api/rescue", async (c) => {
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [getAddress(borrower)] }),
   ]);
   if (trigger === 0n && guard === 0n) return c.json({ error: "set a ratio trigger or a redemption guard first" }, 400);
-  if (reserve < amt) return c.json({ error: "reserve is smaller than the signed amount" }, 400);
+  const fee = rescueFee(amt);
+  if (reserve < amt + fee) {
+    return c.json({ error: `reserve must cover the repay plus the ${musd(fee, 2)} rescue fee: deposit ${musd(amt + fee - reserve, 2)} more` }, 400);
+  }
 
   const snap = latestSnapshot();
   const pos = snap?.price.ok ? position(snap.troves, borrower, snap.price.price) : null;
@@ -187,6 +203,32 @@ app.post("/api/rescue", async (c) => {
   );
   return c.json({ ok: true, id });
 });
+
+/** Public counts: how much Vigil is watching and has done. No addresses, no chat ids. */
+app.get("/api/stats", (c) => {
+  const r = rescues.stats();
+  return c.json(
+    json({
+      watchedLoans: watches.borrowers(),
+      watches: watches.count(),
+      armedRescues: r.armed,
+      executedRescues: r.executed,
+      musdRepaid: r.repaid,
+      vigilReserve: addresses.vigilReserve,
+      feeBps: Number(FEE_BPS),
+      feeCap: FEE_CAP,
+    }),
+  );
+});
+
+/**
+ * Armed rescues with their signatures, for anyone who wants to run a keeper (scripts/keeper.ts).
+ * Publishing them is safe: a signature can only repay that borrower's own debt, from their own
+ * reserve, while one of their own conditions holds; the submitter earns the fixed rescue fee.
+ */
+app.get("/api/armed", (c) =>
+  c.json(json(rescues.armed().map((r) => ({ borrower: r.borrower, amount: r.amount, deadline: r.deadline, signature: r.signature })))),
+);
 
 /** Public rescue log (signatures omitted). */
 app.get("/api/rescues", (c) => c.json(json(rescues.history(50).map((r) => ({ ...r, signature: undefined })))));

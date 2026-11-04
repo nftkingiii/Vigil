@@ -10,6 +10,10 @@ import {
   nearestByNicr,
   nicr,
   nicrAfterRepay,
+  rescueFee,
+  planLoan,
+  parseAmount,
+  guardReach,
   parsePercent,
   position,
   repayToReach,
@@ -105,4 +109,73 @@ test("hint search picks the nearest other trove by nominal ICR", () => {
   // Excluding 0xb itself, 0xc (half its NICR) is closer than 0xa (double it).
   assert.equal(nearestByNicr(all, nicr(all[1]!) + 1n, "0xb")?.borrower, "0xc");
   assert.equal(nearestByNicr(all, nicr(all[2]!), "0xd")?.borrower, "0xc");
+});
+
+test("rescue fee is 0.5% of the amount, capped at 25 MUSD (VigilReserve v3)", () => {
+  assert.equal(rescueFee(e18(300)), e18(1.5));
+  assert.equal(rescueFee(e18(5_000)), e18(25));
+  assert.equal(rescueFee(e18(1_000_000)), e18(25));
+});
+
+const testnetSystem = {
+  mcr: e18(1.1),
+  ccr: e18(1.5),
+  minNetDebt: e18(1_800),
+  gasCompensation: e18(200),
+  borrowingRate: e18(0.001),
+  newLoanRateBips: 100,
+  recoveryMode: false as boolean | null,
+};
+
+test("planner: debt is borrow + 0.1% fee + 200 gas compensation, ratio and queue spot among today's troves", () => {
+  const others = [trove("0xa", 1, 60_000), trove("0xb", 1, 30_000)]; // 133% and 267% at $80k
+  const plan = planLoan(others, { coll: e18(0.05), borrow: e18(2_500), price: e18(80_000), system: testnetSystem });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.borrowingFee, e18(2.5));
+  assert.equal(plan.debt, e18(2_702.5));
+  assert.ok(Math.abs(Number(plan.position.icr) / 1e18 - 4_000 / 2_702.5) < 1e-9); // ~148%
+  assert.equal(plan.position.redemptionRank, 2, "behind the 133% trove, ahead of the 267% one");
+  assert.equal(plan.position.redemptionBuffer, e18(60_000));
+});
+
+test("planner: suggests a trigger halfway to 110%, a repay that restores the ratio, a guard at half the debt ahead", () => {
+  const others = [trove("0xa", 1, 60_000)];
+  const plan = planLoan(others, { coll: e18(0.05), borrow: e18(2_500), price: e18(80_000), system: testnetSystem });
+  const s = plan.suggestion;
+  assert.equal(s.trigger, e18(1.29)); // 110% + (148% - 110%) / 2, rounded down to a whole percent
+  assert.equal(s.guard, e18(30_000));
+  assert.equal(s.fee, rescueFee(s.repay));
+  assert.equal(s.reserve, s.repay + s.fee);
+  // At the trigger's price, repaying s.repay brings the ratio back to about today's.
+  const priceAtTrigger = (s.trigger * plan.debt) / e18(0.05);
+  const restored = Number((e18(0.05) * priceAtTrigger) / (plan.debt - s.repay)) / 1e18;
+  assert.ok(Math.abs(restored - Number(plan.position.icr) / 1e18) < 0.01, `restored ${restored}`);
+});
+
+test("planner: flags loans Mezo would refuse", () => {
+  const tooSmall = planLoan([], { coll: e18(1), borrow: e18(1_000), price: e18(80_000), system: testnetSystem });
+  assert.equal(tooSmall.ok, false);
+  assert.match(tooSmall.problems[0]!, /minimum loan/);
+  const tooThin = planLoan([], { coll: e18(0.03), borrow: e18(2_200), price: e18(80_000), system: testnetSystem });
+  assert.match(tooThin.problems.join(" "), /above 110%/);
+  const recovery = planLoan([], { coll: e18(0.05), borrow: e18(2_500), price: e18(80_000), system: { ...testnetSystem, recoveryMode: true } });
+  assert.match(recovery.problems.join(" "), /Recovery Mode/); // 148% < 150%
+});
+
+test("amount parsing", () => {
+  assert.equal(parseAmount("0.05"), e18(0.05));
+  assert.equal(parseAmount("2500"), e18(2_500));
+  assert.equal(parseAmount("0"), null);
+  assert.equal(parseAmount("-1"), null);
+  assert.equal(parseAmount("1e5"), null);
+});
+
+test("guard reach counts redeemable debt in the first 60 troves of the queue only", () => {
+  const many = Array.from({ length: 80 }, (_, i) => trove(`0x${i}`, 1, 50_000 - i)); // all ~160%
+  const reach = guardReach(many, e18(80_000), "0xnone");
+  // The 59 lowest-NICR troves (largest principal) are within reach; the walk's 60th step is the loan itself.
+  const expected = many.slice(0, 59).reduce((a, t) => a + t.principal, 0n);
+  assert.equal(reach, expected);
+  const plan = planLoan(many, { coll: e18(0.1), borrow: e18(5_000), price: e18(80_000), system: testnetSystem });
+  assert.ok(plan.suggestion.guard === null || plan.suggestion.guard <= reach, "never suggests a guard the contract can't see");
 });

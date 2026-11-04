@@ -67,6 +67,7 @@ export const helpText = `<b>Vigil</b> watches your MUSD loan on Mezo and warns y
 /watch &lt;address&gt; [alert%]: watch the 0x Mezo address that owns your MUSD loan (default alert 150%). If you sign in to Mezo with a Bitcoin wallet, use the 0x account shown in the Mezo app, not your bc1… address.
 /status: your positions now
 /alerts &lt;percent&gt;: change your alert line, e.g. /alerts 160
+/plan &lt;BTC&gt; &lt;MUSD&gt;: plan a new loan before you borrow, e.g. /plan 0.05 2500
 /rescue: set up a pre-signed rescue
 /unwatch [address]: stop watching
 /help: this message

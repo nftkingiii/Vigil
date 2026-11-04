@@ -9,7 +9,7 @@ import {
     IBorrowerOperationsSignatures
 } from "./interfaces/IMezo.sol";
 
-/// @title VigilReserve (v2)
+/// @title VigilReserve (v3)
 /// @notice Holds a borrower's MUSD reserve and spends it on a rescue the borrower pre-signed.
 ///
 /// A rescue goes through Mezo's own BorrowerOperationsSignatures.repayMUSDWithSignature, which
@@ -27,9 +27,13 @@ import {
 /// SortedTroves.getLast() through getPrev(), skipping troves under 110%. The walk stops as soon as
 /// the guard is reached, and at MAX_QUEUE_STEPS, so its gas is bounded.
 ///
+/// Fee: each executed rescue pays its submitter FEE_BPS of the amount, capped at FEE_CAP, from the
+/// same reserve. The fee is fixed in this contract (no owner can change it), so the borrower knows
+/// it before signing, and it lets anyone run a keeper: whoever submits a valid rescue first earns it.
+///
 /// It has no owner and no keeper allow-list: anyone may submit a rescue, because a rescue can only
-/// ever spend the borrower's own reserve to repay the borrower's own debt, and only when one of the
-/// borrower's own conditions holds.
+/// ever spend the borrower's own reserve to repay the borrower's own debt (plus the fixed fee), and
+/// only when one of the borrower's own conditions holds.
 contract VigilReserve {
     IERC20Min public immutable musd;
     IPriceFeed public immutable priceFeed;
@@ -37,7 +41,10 @@ contract VigilReserve {
     ISortedTroves public immutable sortedTroves;
     IBorrowerOperationsSignatures public immutable borrowerOpsSig;
 
-    uint256 public constant VERSION = 2;
+    uint256 public constant VERSION = 3;
+    /// Rescue fee: 0.5% of the repaid amount, at most 25 MUSD, paid to the submitter.
+    uint256 public constant FEE_BPS = 50;
+    uint256 public constant FEE_CAP = 25e18;
     /// Lowest trigger a borrower may set: the 110% liquidation line (Mezo's MCR).
     uint256 public constant MIN_TRIGGER_ICR = 1.1e18;
     /// Most troves the redemption walk reads before giving up (bounded gas).
@@ -67,7 +74,8 @@ contract VigilReserve {
         uint256 icrBefore,
         uint256 icrAfter,
         uint8 reason,
-        uint256 debtAhead
+        uint256 debtAhead,
+        uint256 fee
     );
 
     error ZeroAmount();
@@ -136,30 +144,40 @@ contract VigilReserve {
         address upperHint,
         address lowerHint
     ) external {
-        (uint256 price, uint256 icrBefore, uint8 reason, uint256 ahead) = _checkAndDebit(borrower, amount);
+        (uint256 price, uint256 icrBefore, uint8 reason, uint256 ahead, uint256 fee) = _checkAndDebit(borrower, amount);
 
         uint256 balanceBefore = musd.balanceOf(address(this));
         borrowerOpsSig.repayMUSDWithSignature(amount, upperHint, lowerHint, borrower, signature, deadline);
         uint256 burned = balanceBefore - musd.balanceOf(address(this));
         if (burned != amount) revert BurnMismatch(amount, burned);
+        if (fee > 0 && !musd.transfer(msg.sender, fee)) revert TransferFailed();
 
         emit Rescued(
-            borrower, msg.sender, amount, price, icrBefore, troveManager.getCurrentICR(borrower, price), reason, ahead
+            borrower,
+            msg.sender,
+            amount,
+            price,
+            icrBefore,
+            troveManager.getCurrentICR(borrower, price),
+            reason,
+            ahead,
+            fee
         );
     }
 
     /// Vigil's guards, then the reserve debit (effects before the external repay).
     function _checkAndDebit(address borrower, uint256 amount)
         internal
-        returns (uint256 price, uint256 icr, uint8 reason, uint256 ahead)
+        returns (uint256 price, uint256 icr, uint8 reason, uint256 ahead, uint256 fee)
     {
         uint256 trigger = triggerOf[borrower];
         uint256 guard = guardOf[borrower];
         if (trigger == 0 && guard == 0) revert RescueOff();
         if (troveManager.getTroveStatus(borrower) != TROVE_ACTIVE) revert TroveNotActive();
 
+        fee = feeFor(amount);
         uint256 reserve = reserveOf[borrower];
-        if (reserve < amount) revert ReserveTooSmall(reserve, amount);
+        if (reserve < amount + fee) revert ReserveTooSmall(reserve, amount + fee);
 
         price = priceFeed.fetchPrice(); // reverts on a stale oracle
         icr = troveManager.getCurrentICR(borrower, price);
@@ -170,7 +188,7 @@ contract VigilReserve {
             revert NotTriggered(icr, trigger, found, ahead, guard);
         }
 
-        reserveOf[borrower] = reserve - amount;
+        reserveOf[borrower] = reserve - amount - fee;
     }
 
     /// Which condition holds, if any: the ratio trigger first (cheap), then the redemption guard.
@@ -209,12 +227,18 @@ contract VigilReserve {
 
     // ------------------------------------------------------------------ views
 
+    /// Fee a rescue of `amount` pays its submitter: FEE_BPS of the amount, at most FEE_CAP.
+    function feeFor(uint256 amount) public pure returns (uint256) {
+        uint256 fee = (amount * FEE_BPS) / 10_000;
+        return fee > FEE_CAP ? FEE_CAP : fee;
+    }
+
     /// Whether a rescue for `borrower` of `amount` would pass Vigil's own guards right now.
     /// Mezo's signature checks are not simulated here; keepers should eth_call `rescue` first.
     function canRescue(address borrower, uint256 amount) external view returns (bool ok, uint256 icr, uint256 price) {
         uint256 trigger = triggerOf[borrower];
         uint256 guard = guardOf[borrower];
-        if ((trigger == 0 && guard == 0) || reserveOf[borrower] < amount) return (false, 0, 0);
+        if ((trigger == 0 && guard == 0) || reserveOf[borrower] < amount + feeFor(amount)) return (false, 0, 0);
         if (troveManager.getTroveStatus(borrower) != TROVE_ACTIVE) return (false, 0, 0);
         price = priceFeed.fetchPrice();
         icr = troveManager.getCurrentICR(borrower, price);

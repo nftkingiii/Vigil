@@ -7,7 +7,7 @@
 - Demo video (1:40): https://youtu.be/0sAUZjEPfE4
 - App: https://vigil-mezo.up.railway.app
 - Telegram: [@VigilMezoBot](https://t.me/VigilMezoBot)
-- Contract (Mezo testnet, verified): [`VigilReserve` v2 0x772d…B2c4](https://explorer.test.mezo.org/address/0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4) (Wave 1: [v1 0x9829…cf3E](https://explorer.test.mezo.org/address/0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E))
+- Contract (Mezo testnet, verified): [`VigilReserve` v3 0x29FB…3885](https://explorer.test.mezo.org/address/0x29FB8a330cD5c114B30F0C69b50Bb459dE023885). Earlier: [v2 0x772d…B2c4](https://explorer.test.mezo.org/address/0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4) (redemption-guard proof), [v1 0x9829…cf3E](https://explorer.test.mezo.org/address/0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E) (Wave 1)
 - Evidence (transactions, tests, read-backs): [`docs/evidence.md`](docs/evidence.md)
 
 ## The problem
@@ -30,6 +30,7 @@ Price alerts don't cover the second risk. Most of the time the fix is a small re
 | **Recovery Mode** | Read from Mezo's `TroveManager.checkRecoveryMode` every minute. Vigil alerts when Mezo enters or leaves it and explains what changes: liquidation stays at 110%, repaying still works, but collateral withdrawals, closing and refinancing are blocked. |
 | **Rescue checks** | Every minute Vigil checks each armed rescue can still succeed: reserve at least the signed amount, trigger on, and a repay that keeps net debt above Mezo's `minNetDebt` (read on-chain, since governance can change it). It tells you when one can't, and again when it's fixed. Expired, nonce-moved or closed-loan rescues are voided with the reason. |
 | **Redemption guard** | A rescue can also start when less than your chosen amount of MUSD debt sits ahead of your loan in Mezo's redemption queue. `VigilReserve` walks `SortedTroves` on-chain the same way Mezo's redemption does, so the keeper can't fake it. Repaying moves the loan back in the queue. |
+| **Plan a loan** | Before borrowing, `/plan 0.05 2500` in Telegram or the web page's Plan tab shows what a loan would look like on Mezo right now: ratio, liquidation price, its spot in the redemption queue among today's loans, interest drift, and a suggested trigger, guard, repay and reserve. Mezo's borrowing fee, interest rate and minimums are read from its contracts. |
 | **Pre-signed rescue** | You keep a MUSD reserve in `VigilReserve` and sign Mezo's own `RepayMUSD` message once. If your ratio falls below the trigger you set, the keeper submits exactly that repay. |
 
 ## Why the rescue is safe
@@ -40,6 +41,7 @@ The rescue goes through Mezo's `BorrowerOperationsSignatures.repayMUSDWithSignat
 - `VigilReserve` adds two checks: the ratio at a **fresh oracle price** must be under **your** trigger, and only **your** reserve can pay.
 - Each signature works once (Mezo's nonce). Signing any other Mezo action voids it.
 - `VigilReserve` has no owner, no admin and no keeper allow-list. Anyone may submit a rescue, because a rescue can only spend your reserve on your debt, below your trigger. You can withdraw the reserve at any time.
+- The only other thing a rescue spends is the fixed submitter fee (0.5%, at most 25 MUSD), written into the contract as constants.
 
 ## Proof
 
@@ -80,6 +82,17 @@ Mezo testnet ◄─────────────────────�
 | `bot/src/telegram.ts` | Commands and alerts |
 | `bot/src/keeper.ts` | Rescue submission |
 | `bot/src/web.ts`, `bot/src/web/app.html` | Health, API and the wallet page (no JS libraries, plain EIP-1193) |
+
+## Run your own keeper
+
+`VigilReserve` has no keeper allow-list, and each executed rescue pays its submitter a fee fixed in the contract: **0.5% of the repaid amount, at most 25 MUSD**, from the borrower's reserve. The fee is known before signing and can't be changed by anyone. Vigil runs the default keeper and earns the fee; anyone can compete:
+
+```bash
+cd bot && npm install
+KEEPER_KEY_FILE=./my-keeper.key VIGIL_URL=https://vigil-mezo.up.railway.app npm run keeper
+```
+
+The key only pays gas. Armed signatures come from the public `GET /api/armed`, which is safe to publish: a signature can only repay that borrower's own debt, from their own reserve, while one of their own conditions holds, and the contract checks all of that.
 
 ## Run it
 

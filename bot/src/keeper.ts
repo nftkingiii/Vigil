@@ -4,9 +4,10 @@ import { BaseError, ContractFunctionRevertedError, createWalletClient, http, typ
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { config } from "./config.ts";
 import { short } from "./format.ts";
-import { addresses, client, explorerTx, mezoTestnet, sigOpsAbi, sortedTrovesAbi, troveManagerAbi, TROVE_ACTIVE, vigilAbi } from "./mezo.ts";
+import { repayHints } from "./hints.ts";
+import { addresses, client, explorerTx, mezoTestnet, sigOpsAbi, troveManagerAbi, TROVE_ACTIVE, vigilAbi } from "./mezo.ts";
 import { BLOCKING, issueKey, rescueIssues } from "./rescueHealth.ts";
-import { debtOf, musd, nearestByNicr, nicrAfterRepay, pct, type Trove } from "./risk.ts";
+import { debtOf, musd, pct } from "./risk.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { rescues } from "./store.ts";
 import { notifyBorrower } from "./telegram.ts";
@@ -36,31 +37,6 @@ function revertReason(e: unknown): string {
     return e.shortMessage;
   }
   return String(e);
-}
-
-const ZERO = "0x0000000000000000000000000000000000000000" as const;
-
-/**
- * Exact (upper, lower) neighbours for the trove's position after the repay. Without hints Mezo's
- * reInsert walks the sorted list from the top, which cost the Oct 16 rescue 3.7M gas and grows
- * with every new trove. Falls back to no hints if the lookup fails; the repay still works then.
- */
-export async function repayHints(trove: Trove | undefined, amount: bigint, all: Trove[]): Promise<readonly [Hex, Hex]> {
-  if (!trove) return [ZERO, ZERO];
-  try {
-    const target = nicrAfterRepay(trove, amount);
-    const near = nearestByNicr(all, target, trove.borrower)?.borrower ?? ZERO;
-    const [upper, lower] = await client.readContract({
-      address: addresses.sortedTroves,
-      abi: sortedTrovesAbi,
-      functionName: "findInsertPosition",
-      args: [target, near, near],
-    });
-    return [upper, lower];
-  } catch (e) {
-    console.error(`repay hints unavailable, submitting without: ${revertReason(e)}`);
-    return [ZERO, ZERO];
-  }
 }
 
 /** TroveManager.Status: why a loan is no longer active. */
@@ -167,11 +143,12 @@ export async function runKeeper(snap: Snapshot) {
         const { decodeEventLog } = await import("viem");
         const ev = decodeEventLog({ abi: vigilAbi, data: log.data, topics: log.topics });
         if (ev.eventName === "Rescued") {
+          const fee = ev.args.fee > 0n ? `\nRescue fee ${musd(ev.args.fee, 2)} paid from the reserve to the submitter.` : "";
           const why =
             ev.args.reason === 2
               ? `Why: only ${musd(ev.args.debtAhead)} of other debt was ahead of you in Mezo's redemption queue, under your guard. Repaying moves your loan back in the queue.`
               : `Why: your ratio fell below your trigger.`;
-          detail = `\nRatio ${pct(ev.args.icrBefore, 2)} → <b>${pct(ev.args.icrAfter, 2)}</b>\n${why}`;
+          detail = `\nRatio ${pct(ev.args.icrBefore, 2)} → <b>${pct(ev.args.icrAfter, 2)}</b>\n${why}${fee}`;
         }
       }
       console.log(`rescue executed ${borrower} ${hash}`);

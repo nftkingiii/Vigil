@@ -16,6 +16,7 @@ export const addresses = {
   troveManager: "0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0",
   borrowerOperations: "0xCdF7028ceAB81fA0C6971208e83fa7872994beE5", // BorrowerOperationsSignatures.borrowerOperations()
   sortedTroves: "0x722E4D24FD6Ff8b0AC679450F3D91294607268fA", // TroveManager.sortedTroves()
+  interestRateManager: "0xD4D6c36A592A2c5e86035A6bca1d57747a567f37", // TroveManager.interestRateManager()
   borrowerOperationsSignatures: "0xD757e3646AF370b15f32EB557F0F8380Df7D639e",
   priceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366",
   vigilReserve: config.vigilReserve,
@@ -45,7 +46,11 @@ export const sortedTrovesAbi = parseAbi([
 export const borrowerOpsAbi = parseAbi([
   "function minNetDebt() view returns (uint256)",
   "function MUSD_GAS_COMPENSATION() view returns (uint256)",
+  "function borrowingRate() view returns (uint256)",
 ]);
+
+/** Rate (basis points a year) a new loan gets; set by Mezo governance. */
+export const interestRateManagerAbi = parseAbi(["function interestRate() view returns (uint16)"]);
 
 export const sigOpsAbi = parseAbi([
   "function getNonce(address user) view returns (uint256)",
@@ -68,7 +73,8 @@ export const vigilAbi = parseAbi([
   "function setTrigger(uint256 triggerICR)",
   "function canRescue(address borrower, uint256 amount) view returns (bool ok, uint256 icr, uint256 price)",
   "function rescue(address borrower, uint256 amount, uint256 deadline, bytes signature, address upperHint, address lowerHint)",
-  "event Rescued(address indexed borrower, address indexed keeper, uint256 amount, uint256 price, uint256 icrBefore, uint256 icrAfter, uint8 reason, uint256 debtAhead)",
+  "event Rescued(address indexed borrower, address indexed keeper, uint256 amount, uint256 price, uint256 icrBefore, uint256 icrAfter, uint8 reason, uint256 debtAhead, uint256 fee)",
+  "function feeFor(uint256 amount) pure returns (uint256)",
   "error ZeroAmount()",
   "error TriggerTooLow(uint256 trigger)",
   "error RescueOff()",

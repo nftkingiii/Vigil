@@ -108,6 +108,24 @@ export function position(all: Trove[], borrower: string, price: bigint): Positio
   };
 }
 
+/** VigilReserve walks at most this many troves from the front of the queue (MAX_QUEUE_STEPS). */
+export const MAX_QUEUE_STEPS = 60;
+
+/**
+ * Most debt-ahead a redemption guard can see: the redeemable debt among the first MAX_QUEUE_STEPS
+ * troves of the queue (troves under 110% use up a step but add no debt, as on-chain). A loan
+ * further back than that is never found by the contract, so a larger guard can't fire.
+ */
+export function guardReach(all: Trove[], price: bigint, exclude: string): bigint {
+  const list = all
+    .filter((t) => t.borrower.toLowerCase() !== exclude.toLowerCase())
+    .sort((a, b) => (nicr(a) < nicr(b) ? -1 : nicr(a) > nicr(b) ? 1 : 0))
+    .slice(0, MAX_QUEUE_STEPS - 1);
+  let reach = 0n;
+  for (const t of list) if (icr(t.coll, debtOf(t), price) >= MCR) reach += debtOf(t);
+  return reach;
+}
+
 export type Level = "ok" | "watch" | "danger" | "liquidatable";
 
 /** Alert level from ICR against the user's own alert line (default 150%). */
@@ -157,10 +175,118 @@ export function nearestByNicr(all: Trove[], target: bigint, exclude: string): Tr
   return best;
 }
 
+/** VigilReserve v3's fixed rescue fee, paid to the submitter: 0.5% of the amount, at most 25 MUSD. */
+export const FEE_BPS = 50n;
+export const FEE_CAP = 25n * WAD;
+export function rescueFee(amount: bigint): bigint {
+  const fee = (amount * FEE_BPS) / 10_000n;
+  return fee > FEE_CAP ? FEE_CAP : fee;
+}
+
 /** Repay needed to lift ICR to `target` at `price`. */
 export function repayToReach(coll: bigint, debt: bigint, price: bigint, target: bigint): bigint {
   const maxDebt = (coll * price) / target;
   return debt > maxDebt ? debt - maxDebt : 0n;
+}
+
+// ------------------------------------------------------------------ planning a new loan
+
+export interface PlanInput {
+  coll: bigint;
+  /** MUSD the borrower wants to receive. */
+  borrow: bigint;
+  price: bigint;
+  system: {
+    mcr: bigint;
+    ccr: bigint;
+    minNetDebt: bigint;
+    gasCompensation: bigint;
+    borrowingRate: bigint;
+    newLoanRateBips: number;
+    recoveryMode: boolean | null;
+  };
+}
+
+export interface Plan {
+  ok: boolean;
+  /** Why Mezo would refuse to open this loan, if it would. */
+  problems: string[];
+  /** Total debt at open: what you borrow + Mezo's borrowing fee + gas compensation. */
+  debt: bigint;
+  borrowingFee: bigint;
+  position: Position;
+  /** Suggested Vigil setup for this loan. */
+  suggestion: {
+    trigger: bigint;
+    /** null when the loan wouldn't be in the redemption queue, or nothing is ahead of it. */
+    guard: bigint | null;
+    /** Most debt-ahead the contract's 60-trove walk can see today (guardReach). */
+    guardReach: bigint;
+    repay: bigint;
+    fee: bigint;
+    reserve: bigint;
+  };
+}
+
+const PLAN_ADDRESS = "0x0000000000000000000000000000000000000001" as const;
+
+/**
+ * What a new loan would look like on Mezo right now, before it is opened: its ratio and
+ * liquidation price, where it would enter the redemption queue among today's troves, how fast
+ * interest erodes it, and a Vigil setup that would protect it.
+ */
+export function planLoan(all: Trove[], input: PlanInput): Plan {
+  const { coll, borrow, price, system } = input;
+  const borrowingFee = (borrow * system.borrowingRate) / WAD;
+  const debt = borrow + borrowingFee + system.gasCompensation;
+  const planned: Trove = { borrower: PLAN_ADDRESS, coll, principal: debt, interest: 0n, rateBips: system.newLoanRateBips };
+  const p = position([...all, planned], PLAN_ADDRESS, price)!;
+
+  const problems: string[] = [];
+  if (borrow + borrowingFee < system.minNetDebt) {
+    problems.push(`Mezo's minimum loan is ${musd(system.minNetDebt)} of net debt; this one would be ${musd(borrow + borrowingFee)}.`);
+  }
+  const floor = system.recoveryMode ? system.ccr : system.mcr;
+  if (p.icr < floor) {
+    problems.push(
+      system.recoveryMode
+        ? `Mezo is in Recovery Mode, so a new loan must open at ${pct(system.ccr, 0)} or more; this one would be ${pct(p.icr, 1)}.`
+        : `A loan must open above ${pct(system.mcr, 0)}; this one would be ${pct(p.icr, 1)}.`,
+    );
+  }
+
+  // Trigger halfway between the planned ratio and 110%, never under 115%. At the trigger, the
+  // repay that restores the planned ratio is debt * (1 - trigger / planned ICR).
+  const midway = system.mcr + (p.icr > system.mcr ? (p.icr - system.mcr) / 2n : 0n);
+  const trigger = midway < (115n * WAD) / 100n ? (115n * WAD) / 100n : (midway / 10n ** 16n) * 10n ** 16n;
+  let repay = p.icr > trigger ? debt - (debt * trigger) / p.icr : 0n;
+  const cap = maxRepay(debt, system);
+  if (repay > cap) repay = cap;
+  repay = (repay / WAD) * WAD; // whole MUSD
+  const fee = rescueFee(repay);
+  // Guard at half the debt that would be ahead today, so the rescue runs once half that cushion is
+  // gone; never beyond what the contract's 60-trove walk can see, or it could never fire.
+  const reach = guardReach(all, price, PLAN_ADDRESS);
+  let half = p.redemptionRank !== null && p.redemptionBuffer > 0n ? p.redemptionBuffer / 2n : 0n;
+  if (half > reach) half = reach;
+  const guard = half > 0n ? (half / (1000n * WAD)) * 1000n * WAD : null;
+
+  return {
+    ok: problems.length === 0,
+    problems,
+    debt,
+    borrowingFee,
+    position: { ...p, borrower: PLAN_ADDRESS },
+    suggestion: { trigger, guard: guard && guard > 0n ? guard : null, guardReach: reach, repay, fee, reserve: repay + fee },
+  };
+}
+
+/** Parses "0.05" or "2500.5" into 1e18 fixed point; null if it isn't a plain positive number. */
+export function parseAmount(s: string | undefined): bigint | null {
+  const m = /^(\d{1,12})(?:\.(\d{1,18}))?$/.exec((s ?? "").trim());
+  if (!m) return null;
+  const v = BigInt(m[1]!) * WAD + BigInt((m[2] ?? "").padEnd(18, "0"));
+  return v > 0n ? v : null;
 }
 
 // ------------------------------------------------------------------ formatting
