@@ -4,7 +4,7 @@
 # the rescue itself is submitted by the live Vigil keeper, not by this script.
 set -euo pipefail
 
-STEP=${1:?usage: live-demo.sh open|reserve|arm|reject-above|trigger|reject-tamper}
+STEP=${1:?usage: live-demo.sh open|reserve|arm|reject-above|trigger|reject-tamper|borrow|v1-withdraw|guard-reserve|reject-guard|guard}
 KEY_FILE=${KEY_FILE:-$HOME/.vigil/deployer.key}
 RPC=${RPC:-https://rpc.test.mezo.org}
 VIGIL_URL=${VIGIL_URL:-https://vigil-mezo.up.railway.app}
@@ -13,7 +13,8 @@ CAST=${CAST:-cast}
 MUSD=0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503
 BORROWER_OPS=0xCdF7028ceAB81fA0C6971208e83fa7872994beE5
 SIG_OPS=0xD757e3646AF370b15f32EB557F0F8380Df7D639e
-VIGIL=0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E
+VIGIL_V1=0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E # Wave 1 (ratio trigger only)
+VIGIL=${VIGIL:-0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4} # Wave 2: ratio trigger + redemption guard
 ZERO=0x0000000000000000000000000000000000000000
 
 KEY=$(cat "$KEY_FILE")
@@ -31,7 +32,7 @@ send() { # send <label> <to> <sig> [args...] ; prints tx hash and status
 send_expect_revert() { # broadcast a call that is expected to revert, so the rejection is on-chain
   local label=$1; shift
   local out
-  out=$($CAST send "$@" --gas-limit 600000 --private-key "$KEY" --rpc-url "$RPC" --json 2>&1 || true)
+  out=$($CAST send "$@" --gas-limit "${GAS:-600000}" --private-key "$KEY" --rpc-url "$RPC" --json 2>&1 || true)
   echo "$label $(echo "$out" | python3 -c 'import json,sys
 try:
   r=json.load(sys.stdin); print(r["transactionHash"], "status", r["status"])
@@ -69,4 +70,19 @@ JSON
   reject-tamper) # same signature, amount changed to 400: Mezo must refuse
     send_expect_revert "rescue(tampered amount)" "$VIGIL" "rescue(address,uint256,uint256,bytes,address,address)" \
       "$ME" 400000000000000000000 "$(cat "$STATE/deadline")" "$(cat "$STATE/sig")" $ZERO $ZERO ;;
+  # ---- Wave 2: redemption-guard rescue (VigilReserve v2)
+  borrow) # borrow 350 more MUSD: the loan moves from ~146% to ~126%, near the front of the redemption queue
+    send "withdrawMUSD(350)" "$BORROWER_OPS" "withdrawMUSD(uint256,address,address)" 350000000000000000000 $ZERO $ZERO ;;
+  v1-withdraw) # take the 100 MUSD left in the Wave 1 reserve back to the wallet
+    send "v1 withdraw(100)" "$VIGIL_V1" "withdraw(uint256,address)" 100000000000000000000 "$ME" ;;
+  guard-reserve) # 400 MUSD reserve in v2, ratio trigger off, redemption guard 20,000 MUSD (less than is ahead now)
+    send "approve" "$MUSD" "approve(address,uint256)" $VIGIL 400000000000000000000
+    send "deposit" "$VIGIL" "deposit(address,uint256)" "$ME" 400000000000000000000
+    send "setTrigger(off)" "$VIGIL" "setTrigger(uint256)" 0
+    send "setRedemptionGuard(20,000)" "$VIGIL" "setRedemptionGuard(uint256)" 20000000000000000000000 ;;
+  reject-guard) # more debt than the guard is ahead: VigilReserve must refuse (queue walk needs more gas)
+    GAS=3000000 send_expect_revert "rescue(guard not hit)" "$VIGIL" "rescue(address,uint256,uint256,bytes,address,address)" \
+      "$ME" 300000000000000000000 "$(cat "$STATE/deadline")" "$(cat "$STATE/sig")" $ZERO $ZERO ;;
+  guard) # raise the guard to 60,000 MUSD: less than that is ahead, so the live keeper may rescue
+    send "setRedemptionGuard(60,000)" "$VIGIL" "setRedemptionGuard(uint256)" 60000000000000000000000 ;;
 esac

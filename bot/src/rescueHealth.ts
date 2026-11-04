@@ -22,6 +22,8 @@ export function rescueIssues(r: {
   now: number;
   reserve: bigint;
   trigger: bigint;
+  /** Redemption guard (MUSD of debt ahead), 0 when off. */
+  guard: bigint;
   /** Current debt, or null when the loan isn't in the snapshot. */
   debt: bigint | null;
   limits: { minNetDebt: bigint; gasCompensation: bigint };
@@ -34,8 +36,12 @@ export function rescueIssues(r: {
       text: `your Vigil reserve holds ${musd(r.reserve)} but the signed repay is ${musd(r.amount)}. Deposit at least ${musd(r.amount - r.reserve)} more.`,
     });
   }
-  if (r.trigger === 0n) {
-    out.push({ code: "trigger_off", blocking: true, text: "your rescue trigger is switched off. Set a trigger on the web page." });
+  if (r.trigger === 0n && r.guard === 0n) {
+    out.push({
+      code: "trigger_off",
+      blocking: true,
+      text: "both your ratio trigger and your redemption guard are off, so nothing can start the rescue. Set one on the web page.",
+    });
   }
   if (r.debt !== null) {
     const max = maxRepay(r.debt, r.limits);

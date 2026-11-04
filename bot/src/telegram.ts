@@ -113,7 +113,7 @@ bot.command("rescue", (ctx) => {
   const target = list[0]?.borrower;
   const url = `${config.publicUrl}/${target ? `?borrower=${getAddress(target)}` : ""}`;
   return ctx.reply(
-    `🛟 <b>Pre-signed rescue</b>\n\n1. Deposit a MUSD reserve into the Vigil contract.\n2. Choose a trigger ratio (above 110%).\n3. Sign one capped repay with your wallet.\n\nIf your ratio drops below the trigger, Vigil submits that exact repay. Mezo checks your signature, so the amount, the loan and the deadline can't be changed.\n\nOpen in a browser with your wallet:\n${url}`,
+    `🛟 <b>Pre-signed rescue</b>\n\n1. Deposit a MUSD reserve into the Vigil contract.\n2. Choose a trigger ratio (above 110%), a redemption guard (MUSD of debt ahead of you in the redemption queue), or both.\n3. Sign one capped repay with your wallet.\n\nIf your ratio drops below the trigger, or less debt than your guard is ahead of you in Mezo's redemption queue, Vigil submits that exact repay. Mezo checks your signature, so the amount, the loan and the deadline can't be changed.\n\nOpen in a browser with your wallet:\n${url}`,
     html,
   );
 });

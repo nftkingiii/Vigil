@@ -62,12 +62,13 @@ export async function runKeeper(snap: Snapshot) {
       continue;
     }
 
-    const [nonce, reserve, trigger, status] = await client.multicall({
+    const [nonce, reserve, trigger, guard, status] = await client.multicall({
       allowFailure: false,
       contracts: [
         { address: addresses.borrowerOperationsSignatures, abi: sigOpsAbi, functionName: "getNonce", args: [borrower] },
         { address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [borrower] },
         { address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [borrower] },
+        { address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [borrower] },
         { address: addresses.troveManager, abi: troveManagerAbi, functionName: "getTroveStatus", args: [borrower] },
       ],
     });
@@ -90,6 +91,7 @@ export async function runKeeper(snap: Snapshot) {
       now,
       reserve,
       trigger,
+      guard,
       debt: trove ? debtOf(trove) : null,
       limits: snap.system,
     });
@@ -139,7 +141,13 @@ export async function runKeeper(snap: Snapshot) {
       if (log) {
         const { decodeEventLog } = await import("viem");
         const ev = decodeEventLog({ abi: vigilAbi, data: log.data, topics: log.topics });
-        if (ev.eventName === "Rescued") detail = `\nRatio ${pct(ev.args.icrBefore, 2)} → <b>${pct(ev.args.icrAfter, 2)}</b>`;
+        if (ev.eventName === "Rescued") {
+          const why =
+            ev.args.reason === 2
+              ? `Why: only ${musd(ev.args.debtAhead)} of other debt was ahead of you in Mezo's redemption queue, under your guard. Repaying moves your loan back in the queue.`
+              : `Why: your ratio fell below your trigger.`;
+          detail = `\nRatio ${pct(ev.args.icrBefore, 2)} → <b>${pct(ev.args.icrAfter, 2)}</b>\n${why}`;
+        }
       }
       console.log(`rescue executed ${borrower} ${hash}`);
       await notifyBorrower(

@@ -10,6 +10,7 @@ const base = {
   now,
   reserve: e18(400),
   trigger: 135n * 10n ** 16n,
+  guard: 0n,
   debt: e18(2_502),
   limits: { minNetDebt: e18(1_800), gasCompensation: e18(200) },
 };
@@ -32,6 +33,10 @@ test("a repay that would break Mezo's minimum net debt is flagged with the curre
   assert.match(issues[0]!.text, /250 MUSD/);
   // A higher on-chain minimum blocks a repay that fits today's.
   assert.equal(issueKey(rescueIssues({ ...base, limits: { minNetDebt: e18(2_100), gasCompensation: e18(200) } })), "below_min_debt");
+});
+
+test("a redemption guard alone keeps the rescue on", () => {
+  assert.equal(issueKey(rescueIssues({ ...base, trigger: 0n, guard: e18(50_000) })), "");
 });
 
 test("a signature about to expire warns without blocking", () => {

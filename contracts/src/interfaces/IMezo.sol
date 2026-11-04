@@ -18,6 +18,24 @@ interface IPriceFeed {
 interface ITroveManager {
     function getCurrentICR(address borrower, uint256 price) external view returns (uint256);
     function getTroveStatus(address borrower) external view returns (uint8);
+    function getEntireDebtAndColl(address borrower)
+        external
+        view
+        returns (
+            uint256 coll,
+            uint256 principal,
+            uint256 interest,
+            uint256 pendingCollateral,
+            uint256 pendingPrincipal,
+            uint256 pendingInterest
+        );
+    function sortedTroves() external view returns (address);
+}
+
+/// Troves sorted by nominal ICR, highest first. Redemptions start at getLast() and walk getPrev().
+interface ISortedTroves {
+    function getLast() external view returns (address);
+    function getPrev(address id) external view returns (address);
 }
 
 interface IBorrowerOperationsSignatures {

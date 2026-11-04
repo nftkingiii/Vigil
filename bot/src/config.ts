@@ -1,6 +1,6 @@
 import { isAddress, type Address } from "viem";
 
-const vigilReserve = process.env.VIGIL_RESERVE ?? "0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E";
+const vigilReserve = process.env.VIGIL_RESERVE ?? "0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4";
 if (!isAddress(vigilReserve)) throw new Error("VIGIL_RESERVE is not an address");
 
 export const config = {

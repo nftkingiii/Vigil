@@ -15,6 +15,7 @@ library MezoTestnet {
 interface IBorrowerOperationsTest {
     function openTrove(uint256 debtAmount, address upperHint, address lowerHint) external payable;
     function repayMUSD(uint256 amount, address upperHint, address lowerHint) external;
+    function withdrawMUSD(uint256 amount, address upperHint, address lowerHint) external;
 }
 
 interface ITroveManagerTest {

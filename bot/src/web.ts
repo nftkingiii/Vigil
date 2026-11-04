@@ -7,7 +7,7 @@ import { keeperStatus } from "./keeper.ts";
 import { addresses, client, mezoTestnet, repayTypedData, sigOpsAbi, vigilAbi } from "./mezo.ts";
 import { latestSnapshot, monitorStatus } from "./monitor.ts";
 import { rescueIssues } from "./rescueHealth.ts";
-import { maxRepay, musd, position, repayToReach } from "./risk.ts";
+import { maxRepay, musd, pct, position, repayToReach } from "./risk.ts";
 import { rescues, watches } from "./store.ts";
 import { notifyBorrower, telegramEnabled } from "./telegram.ts";
 
@@ -30,6 +30,7 @@ const pageConfig = {
     deposit: toFunctionSelector("deposit(address,uint256)"),
     withdraw: toFunctionSelector("withdraw(uint256,address)"),
     setTrigger: toFunctionSelector("setTrigger(uint256)"),
+    setRedemptionGuard: toFunctionSelector("setRedemptionGuard(uint256)"),
   },
   bot: "VigilMezoBot",
 };
@@ -68,9 +69,10 @@ app.get("/api/position/:address", async (c) => {
   const borrower = getAddress(addr);
   const snap = latestSnapshot();
 
-  const [reserve, trigger, nonce, musdBalance] = await Promise.all([
+  const [reserve, trigger, guard, nonce, musdBalance] = await Promise.all([
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [borrower] }),
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [borrower] }),
+    client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [borrower] }),
     client.readContract({ address: addresses.borrowerOperationsSignatures, abi: sigOpsAbi, functionName: "getNonce", args: [borrower] }),
     client.readContract({
       address: addresses.musd,
@@ -95,6 +97,7 @@ app.get("/api/position/:address", async (c) => {
       repayTo150: pos && price ? repayToReach(pos.coll, pos.debt, price, 15n * 10n ** 17n) : null,
       reserve,
       trigger,
+      guard,
       nonce,
       musdBalance,
       latestRescue: latest && { ...latest, signature: undefined },
@@ -107,6 +110,7 @@ app.get("/api/position/:address", async (c) => {
               now: Math.floor(Date.now() / 1000),
               reserve,
               trigger,
+              guard,
               debt: pos?.debt ?? null,
               limits: snap.system,
             })
@@ -154,11 +158,12 @@ app.post("/api/rescue", async (c) => {
   });
   if (onchainNonce !== n) return c.json({ error: `nonce is ${onchainNonce}, signature used ${n}` }, 400);
 
-  const [reserve, trigger] = await Promise.all([
+  const [reserve, trigger, guard] = await Promise.all([
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [getAddress(borrower)] }),
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [getAddress(borrower)] }),
+    client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [getAddress(borrower)] }),
   ]);
-  if (trigger === 0n) return c.json({ error: "set a trigger first" }, 400);
+  if (trigger === 0n && guard === 0n) return c.json({ error: "set a ratio trigger or a redemption guard first" }, 400);
   if (reserve < amt) return c.json({ error: "reserve is smaller than the signed amount" }, 400);
 
   const snap = latestSnapshot();
@@ -173,7 +178,12 @@ app.post("/api/rescue", async (c) => {
   const id = rescues.arm({ borrower, amount: amt, nonce: n, deadline: Number(dl), signature });
   await notifyBorrower(
     borrower,
-    `🛟 Rescue armed: up to ${Number(amt / 10n ** 18n).toLocaleString("en-US")} MUSD will be repaid from your Vigil reserve if your ratio drops below ${(Number((trigger * 1000n) / 10n ** 18n) / 10).toFixed(1)}%.`,
+    `🛟 Rescue armed: up to ${musd(amt)} will be repaid from your Vigil reserve ${[
+      trigger ? `if your ratio drops below ${pct(trigger, 1)}` : "",
+      guard ? `if less than ${musd(guard)} of other debt is ahead of you in Mezo's redemption queue` : "",
+    ]
+      .filter(Boolean)
+      .join(", or ")}.`,
   );
   return c.json({ ok: true, id });
 });

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vigil · MUSD rescue</title>
-<meta name="description" content="Pre-signed rescue for MUSD loans on Mezo. Keep a MUSD reserve, sign one capped repay, and Vigil submits it if your ratio drops below your trigger.">
+<meta name="description" content="Pre-signed rescue for MUSD loans on Mezo. Keep a MUSD reserve, sign one capped repay, and Vigil submits it if your ratio drops below your trigger or your loan nears the front of the redemption queue.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='112' fill='%230B0F17'/><path d='M96 290C140 196 196 150 256 150s116 46 160 140' fill='none' stroke='%23F5A524' stroke-width='40' stroke-linecap='round'/><circle cx='256' cy='282' r='60' fill='%23F5A524'/><path d='M96 362H416' stroke='%23E8ECF4' stroke-width='28' stroke-linecap='round'/></svg>">
 <style>
   :root {
@@ -110,6 +110,7 @@
         <div class="grid" style="margin-top:10px">
           <div class="stat"><div class="k">Reserve</div><div class="v" id="s-reserve">–</div><div class="h" id="s-wallet">–</div></div>
           <div class="stat"><div class="k">Trigger</div><div class="v" id="s-trigger">–</div><div class="h">rescue runs below this</div></div>
+          <div class="stat"><div class="k">Redemption guard</div><div class="v" id="s-guard">–</div><div class="h" id="s-guard-h">rescue runs when less debt is ahead</div></div>
           <div class="stat"><div class="k">Rescue</div><div class="v" id="s-rescue">–</div><div class="h" id="s-rescue-h">–</div></div>
         </div>
       </div>
@@ -138,6 +139,14 @@
         <button id="settrigger">Set trigger</button>
       </div>
     </div>
+    <div class="card">
+      <h2>Redemption guard</h2>
+      <p class="sub">Redemptions take BTC from the lowest-ratio loans first, even healthy ones. With a guard set, a rescue can also run when less than this much MUSD of other debt sits ahead of your loan in Mezo's redemption queue. The contract walks the queue on-chain, the same way Mezo does. Repaying moves your loan back.</p>
+      <div class="row">
+        <div><label for="grd">Guard (MUSD of debt ahead, 0 = off)</label><input id="grd" inputmode="decimal" placeholder="e.g. 50000"></div>
+        <button id="setguard">Set guard</button>
+      </div>
+    </div>
   </section>
 
   <!-- RESCUE -->
@@ -148,8 +157,8 @@
       <p class="sub">You sign Mezo's own <span class="mono">RepayMUSD</span> message. Mezo checks the signature, so Vigil can't change the amount, the loan or the deadline. If you sign any other Mezo action later, this rescue becomes void.</p>
       <ol class="steps">
         <li><b>Reserve</b> must cover the amount.</li>
-        <li><b>Trigger</b> must be set.</li>
-        <li><b>Sign</b> below. Vigil stores the signature and submits it only below your trigger.</li>
+        <li><b>Trigger or redemption guard</b> must be set.</li>
+        <li><b>Sign</b> below. Vigil stores the signature and submits it only when your trigger or guard is hit.</li>
       </ol>
       <div class="row">
         <div><label for="amt">Repay amount (MUSD)</label><input id="amt" inputmode="decimal" placeholder="e.g. 300"></div>
@@ -299,6 +308,8 @@ async function load(a) {
   $("s-reserve").textContent = fmt(d.reserve) + " MUSD";
   $("s-wallet").textContent = `wallet holds ${fmt(d.musdBalance)} MUSD`;
   $("s-trigger").textContent = BigInt(d.trigger) ? pct(d.trigger, 1) : "off";
+  $("s-guard").textContent = BigInt(d.guard) ? fmt(d.guard, 0) + " MUSD" : "off";
+  if (p && p.redemptionRank) $("s-guard-h").textContent = `${fmt(p.redemptionBuffer, 0)} MUSD ahead of you now`;
   const lr = d.latestRescue;
   const blocked = (d.rescueIssues || []).filter((i) => i.blocking);
   $("s-rescue").textContent = lr ? (lr.status === "armed" && blocked.length ? "armed, can't succeed" : lr.status) : "none";
@@ -347,6 +358,13 @@ $("settrigger").onclick = () => guarded(async () => {
   await send(CFG.vigilReserve, CFG.selectors.setTrigger + uint(wei), "Set trigger");
   await load(account);
 });
+$("setguard").onclick = () => guarded(async () => {
+  const v = $("grd").value.trim();
+  if (!/^\d+(\.\d+)?$/.test(v)) throw new Error("Enter an amount of MUSD, or 0 to switch the guard off.");
+  if (!account) await connect();
+  await send(CFG.vigilReserve, CFG.selectors.setRedemptionGuard + uint(toWei(v)), "Set redemption guard");
+  await load(account);
+});
 $("sign").onclick = () => guarded(async () => {
   if (!account) await connect();
   await ensureChain();
@@ -373,7 +391,7 @@ $("sign").onclick = () => guarded(async () => {
   const r = await fetch("/api/rescue", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...message, signature }) });
   const d = await r.json();
   if (!r.ok) throw new Error(d.error || "Vigil rejected the signature");
-  log(`Rescue armed ✓ (#${d.id})\nUp to ${fmt(amount)} MUSD will be repaid from your reserve if your ratio drops below your trigger, until ${new Date(deadline * 1000).toLocaleString()}.`);
+  log(`Rescue armed ✓ (#${d.id})\nUp to ${fmt(amount)} MUSD will be repaid from your reserve if your trigger or redemption guard is hit, until ${new Date(deadline * 1000).toLocaleString()}.`);
   await load(account);
 });
 
