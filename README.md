@@ -7,7 +7,7 @@
 - Demo video (1:40): https://youtu.be/0sAUZjEPfE4
 - App: https://vigil-mezo.up.railway.app
 - Telegram: [@VigilMezoBot](https://t.me/VigilMezoBot)
-- Contract (Mezo testnet, verified): [`VigilReserve` 0x9829…cf3E](https://explorer.test.mezo.org/address/0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E)
+- Contract (Mezo testnet, verified): [`VigilReserve` v2 0x772d…B2c4](https://explorer.test.mezo.org/address/0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4) (Wave 1: [v1 0x9829…cf3E](https://explorer.test.mezo.org/address/0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E))
 - Evidence (transactions, tests, read-backs): [`docs/evidence.md`](docs/evidence.md)
 
 ## The problem
@@ -29,6 +29,7 @@ Price alerts don't cover the second risk. Most of the time the fix is a small re
 | **Stale price** | Mezo's `PriceFeed` reverts when its oracle is over 60 s old. Vigil reports "paused" and never acts on a guessed price. |
 | **Recovery Mode** | Read from Mezo's `TroveManager.checkRecoveryMode` every minute. Vigil alerts when Mezo enters or leaves it and explains what changes: liquidation stays at 110%, repaying still works, but collateral withdrawals, closing and refinancing are blocked. |
 | **Rescue checks** | Every minute Vigil checks each armed rescue can still succeed: reserve at least the signed amount, trigger on, and a repay that keeps net debt above Mezo's `minNetDebt` (read on-chain, since governance can change it). It tells you when one can't, and again when it's fixed. Expired, nonce-moved or closed-loan rescues are voided with the reason. |
+| **Redemption guard** | A rescue can also start when less than your chosen amount of MUSD debt sits ahead of your loan in Mezo's redemption queue. `VigilReserve` walks `SortedTroves` on-chain the same way Mezo's redemption does, so the keeper can't fake it. Repaying moves the loan back in the queue. |
 | **Pre-signed rescue** | You keep a MUSD reserve in `VigilReserve` and sign Mezo's own `RepayMUSD` message once. If your ratio falls below the trigger you set, the keeper submits exactly that repay. |
 
 ## Why the rescue is safe
@@ -44,8 +45,9 @@ The rescue goes through Mezo's `BorrowerOperationsSignatures.repayMUSDWithSignat
 
 All on Mezo testnet (chain 31611). Details and links are in [`docs/evidence.md`](docs/evidence.md).
 
-- **12/12 fork tests** against the real MUSD contracts: one allowed rescue, plus rejections for a stale oracle, a tampered amount, an expired signature, a moved nonce, a replay, a short reserve, rescue switched off, and someone else withdrawing your reserve.
-- **Live rescue (2026-10-16):** the Railway keeper repaid 300 MUSD from the reserve. Ratio went from 130.94% to 148.77% ([tx](https://explorer.test.mezo.org/tx/0x36505f769fecbff092c85736a9f09e1c9fc006bf4454d387effe70a8ad5e8347)).
+- **17/17 fork tests** against the real MUSD contracts: allowed rescues by ratio and by redemption guard, plus rejections for a stale oracle, a tampered amount, an expired signature, a moved nonce, a replay, a short reserve, rescue switched off, a guard not reached, a guard on a loan under 110%, and someone else withdrawing your reserve.
+- **Live redemption-guard rescue (2026-11-04, Wave 2):** with the ratio trigger off, the Railway keeper repaid 300 MUSD because only 25,882 MUSD of debt was ahead of the loan in Mezo's redemption queue (guard 60,000). The loan moved more than 60 troves back ([tx](https://explorer.test.mezo.org/tx/0x0f17ddb3de97630f65a72f25b59c8432e76ecdacb22bfad07bfee02a822c0c6a)). With the guard at 20,000 the same rescue was refused on-chain with `NotTriggered` ([tx](https://explorer.test.mezo.org/tx/0x4774df79fc352a33a7dddd1a97a9e3ddbf2c960e1c2d54d9d55a18852045d6e9)).
+- **Live ratio rescue (2026-10-16, Wave 1):** the Railway keeper repaid 300 MUSD from the reserve. Ratio went from 130.94% to 148.77% ([tx](https://explorer.test.mezo.org/tx/0x36505f769fecbff092c85736a9f09e1c9fc006bf4454d387effe70a8ad5e8347)).
 - **Live rejections:** `AboveTrigger` ([tx](https://explorer.test.mezo.org/tx/0x94b9e31e8c385f7459ec69c265a7c78dc924e0f5f60704fb8a79135f9a7417da)) and Mezo's `Invalid signature` for a tampered amount ([tx](https://explorer.test.mezo.org/tx/0x5400e79bbcf8e84252b8d37afbd2d6bd24c4c60f336ba638ccf4ac5366a77168)).
 
 The test borrower's setup transactions were scripted (`scripts/live-demo.sh`); the rescue transaction itself came from the live keeper.
@@ -95,4 +97,4 @@ Mezo contracts used (testnet): MUSD `0x1189…c503`, TroveManager `0xE47c…6bb0
 
 ## Status
 
-Mezo testnet only. Built for the Mezo Buildathon (Wave 1, Track 2: Access & Distribution). Not audited.
+Mezo testnet only. Built for the Mezo Buildathon (Waves 1 and 2, Track 2: Access & Distribution). Not audited.

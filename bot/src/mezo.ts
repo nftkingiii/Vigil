@@ -15,6 +15,7 @@ export const addresses = {
   musd: "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503",
   troveManager: "0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0",
   borrowerOperations: "0xCdF7028ceAB81fA0C6971208e83fa7872994beE5", // BorrowerOperationsSignatures.borrowerOperations()
+  sortedTroves: "0x722E4D24FD6Ff8b0AC679450F3D91294607268fA", // TroveManager.sortedTroves()
   borrowerOperationsSignatures: "0xD757e3646AF370b15f32EB557F0F8380Df7D639e",
   priceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366",
   vigilReserve: config.vigilReserve,
@@ -33,6 +34,11 @@ export const troveManagerAbi = parseAbi([
   "function CCR() view returns (uint256)",
   "function getTCR(uint256 price) view returns (uint256)",
   "function checkRecoveryMode(uint256 price) view returns (bool)",
+]);
+
+/** Insert-position lookup Mezo's own app uses to pass repay hints, so reInsert doesn't walk the list. */
+export const sortedTrovesAbi = parseAbi([
+  "function findInsertPosition(uint256 NICR, address prevId, address nextId) view returns (address, address)",
 ]);
 
 /** minNetDebt is set by Mezo governance (proposeMinNetDebt / approveMinNetDebt), so read it, never assume it. */

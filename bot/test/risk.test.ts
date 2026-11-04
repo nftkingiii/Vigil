@@ -7,6 +7,9 @@ import {
   liquidationPrice,
   maxRepay,
   MCR,
+  nearestByNicr,
+  nicr,
+  nicrAfterRepay,
   parsePercent,
   position,
   repayToReach,
@@ -89,4 +92,17 @@ test("percent parsing", () => {
   assert.equal(parsePercent("abc"), null);
   assert.equal(parsePercent("1"), null);
   assert.equal(WAD, 10n ** 18n);
+});
+
+test("a repay pays interest first, then principal, and re-sorts by coll / principal", () => {
+  const t = trove("0x1", 1, 10_000, 50);
+  assert.equal(nicrAfterRepay(t, e18(50)), nicr(t), "interest-only repay leaves principal, so NICR is unchanged");
+  assert.equal(nicrAfterRepay(t, e18(1_050)), nicr({ ...t, principal: e18(9_000) }));
+});
+
+test("hint search picks the nearest other trove by nominal ICR", () => {
+  const all = [trove("0xa", 1, 10_000), trove("0xb", 1, 20_000), trove("0xc", 1, 40_000)];
+  // Excluding 0xb itself, 0xc (half its NICR) is closer than 0xa (double it).
+  assert.equal(nearestByNicr(all, nicr(all[1]!) + 1n, "0xb")?.borrower, "0xc");
+  assert.equal(nearestByNicr(all, nicr(all[2]!), "0xd")?.borrower, "0xc");
 });

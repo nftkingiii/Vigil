@@ -2,7 +2,67 @@
 
 All on Mezo testnet (chain ID 31611). Explorer: https://explorer.test.mezo.org
 
-## VigilReserve
+## Wave 2 (from 2026-11-02)
+
+Wave 1 feedback asked for a new job for MUSD (a redemption-triggered rescue), Mezo parameters read on-chain instead of hardcoded, and a warning when an armed rescue can no longer succeed. All three are built and live.
+
+### VigilReserve v2: redemption-guard rescue
+
+| Item | Value |
+|---|---|
+| Address | [`0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4`](https://explorer.test.mezo.org/address/0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4) |
+| Deploy tx | [`0xafc4e654…82dc`](https://explorer.test.mezo.org/tx/0xafc4e654f82a64af611df9fea23c9bd340126ef60f372d30ed286bd5850682dc), block 16,572,786, 2026-11-04 18:03 UTC, status success |
+| Source | Verified on the explorer (Blockscout), same compiler settings as v1 |
+| Read back | `VERSION()` 2, `sortedTroves()` `0x722E4D24…68fA` (= `TroveManager.sortedTroves()`), `MAX_QUEUE_STEPS()` 60, MUSD and BorrowerOperationsSignatures as v1 |
+| What's new | `setRedemptionGuard(minDebtAhead)`: a rescue may also run when less than that much MUSD of other debt sits ahead of the loan in Mezo's redemption queue. The contract walks `SortedTroves` on-chain the way `TroveManager.redeemCollateral` does (`getLast`, `getPrev`, skipping troves under 110%), stops once the guard is reached or after 60 troves. `Rescued` now logs the reason (1 ratio, 2 redemption) and the debt ahead. |
+| Fork tests | 17/17 pass (2026-11-04), 5 new: rescue near the front of the real queue, `Rescued` reason, guard not reached, no guard rescue under 110%, ratio trigger still fires with a guard set |
+| Gas | Full 60-trove walk: 1,808,087 gas (`eth_estimateGas` of `debtAhead` on testnet). Block gas limit 10,000,000 |
+
+v1 (`0x9829…cf3E`, below) stays deployed for its Wave 1 history. The service and web page now use v2.
+
+### Live redemption-guard rescue: 2026-11-04
+
+Same burner borrower as Wave 1, [`0x16f2981D…CB4f`](https://explorer.test.mezo.org/address/0x16f2981DF2027e66857e3a857d6d3B2F858eCB4f). Ratio trigger **off**, so only the redemption guard can start the rescue.
+
+**Scripted setup** (`scripts/live-demo.sh`, not a user flow):
+
+| Step | Tx | Result |
+|---|---|---|
+| Borrow 350 more MUSD | [`0xb2757644…2b1f`](https://explorer.test.mezo.org/tx/0xb2757644fd473ad967a0350699df6a323cd568593bb7144c39661a32b8272b1f) | ok. Ratio ~146% → 126.2%; the loan moves near the front of the redemption queue |
+| Withdraw 100 MUSD left in the v1 reserve | [`0xd345b9e0…ce7d`](https://explorer.test.mezo.org/tx/0xd345b9e0a3bb822b66e37ec1a5c5fd0edd0a78965581f0dcd66b35694c10ce7d) | ok |
+| Approve 400 MUSD for v2 | [`0xb3f278cb…6efb`](https://explorer.test.mezo.org/tx/0xb3f278cb6f75a675244d0eface9d501cf3f7aac4914dc89e58389cd085b76efb) | ok |
+| Deposit 400 MUSD reserve | [`0xe523e8ba…b667`](https://explorer.test.mezo.org/tx/0xe523e8ba3d71476c6056bf6639ac37cb4282cad19dde83c0943385ac9957b667) | ok |
+| Redemption guard 20,000 MUSD | [`0x5ae5f073…b000`](https://explorer.test.mezo.org/tx/0x5ae5f073efb1dcd3aad3583597397bef7d3d802c4d653bfc4fea998920edb000) | ok. `debtAhead` on-chain: found, 25,882 MUSD ahead, so the guard is not hit |
+| Sign RepayMUSD(300 MUSD, nonce 1, 7 days); POST to the live `/api/rescue` | off-chain | `{"ok":true,"id":2}` |
+| Rescue while 25,882 MUSD is ahead (guard 20,000) | [`0x4774df79…d6e9`](https://explorer.test.mezo.org/tx/0x4774df79fc352a33a7dddd1a97a9e3ddbf2c960e1c2d54d9d55a18852045d6e9) | reverted, as expected: `NotTriggered(icr 1.2617, trigger 0, found false, debtAhead 21,444, guard 20,000)`. The walk stopped as soon as the debt ahead passed the guard |
+| Raise the guard to 60,000 MUSD | [`0x29950e45…5aa1`](https://explorer.test.mezo.org/tx/0x29950e4568a269f840b44a70845b41160e0727a492df7f0b5358dd31c9af5aa1) | ok |
+
+**Rescue, submitted by the live keeper on Railway, not by the script:**
+
+| Tx | From | Event `Rescued` |
+|---|---|---|
+| [`0x0f17ddb3…0c6a`](https://explorer.test.mezo.org/tx/0x0f17ddb3de97630f65a72f25b59c8432e76ecdacb22bfad07bfee02a822c0c6a), block 16,572,945, 2026-11-04 18:14:52 UTC | keeper `0xbe8c12d0…3934` | amount **300 MUSD**, price $80,591.75, ICR 126.23% → 143.03%, **reason 2 (redemption)**, **debt ahead 25,882 MUSD** |
+
+Read back after the rescue:
+
+| What | Value |
+|---|---|
+| Vigil v2 reserve | 400 → 100 MUSD |
+| Mezo `getNonce(borrower)` | 1 → 2 |
+| Debt ahead in the redemption queue | 25,882 MUSD → more than 166,928 MUSD (more than 60 troves back; `debtAhead` returns found = false) |
+| Service log | `/api/rescues` shows #2 `executed` with the same tx hash |
+
+**Gas, and the fix it led to.** This rescue used 6,205,031 gas. The keeper had passed no position hints, so Mezo's `SortedTroves.reInsert` searched the list from the top. The keeper now computes the trove's nominal ICR after the repay (Mezo applies a repay to interest first, then principal) and asks `SortedTroves.findInsertPosition` for the exact neighbours. Measured on testnet with `eth_estimateGas` for a 50 MUSD repay from the same borrower (360 troves): **5,883,246 gas without hints, 379,807 with**.
+
+### Mezo parameters on-chain, and dead-rescue warnings
+
+Shipped 2026-11-01 (`3f07b37`), the day the Wave 1 feedback arrived:
+
+- Every minute the service reads `BorrowerOperations.minNetDebt()` (1,800 MUSD), `MUSD_GAS_COMPENSATION()` (200), `TroveManager.MCR()` (110%), `CCR()` (150%), `getTCR(price)` and `checkRecoveryMode(price)`. `/health` shows them under `monitor.system`.
+- Recovery Mode: alerts on entry and exit, with what changes (from the MUSD source: liquidation stays below 110%, repaying and adding collateral still work, collateral withdrawals, closing and refinancing are blocked). Off on testnet so far (system ratio ~279%), so the live alert has not fired.
+- Each armed rescue is checked every minute: reserve at least the signed amount, a trigger or guard on, and a repay that keeps net debt above `minNetDebt`. The borrower is told once per change, and again when it's fixed; a reminder comes 24 h before the signature expires. Closed, liquidated or fully redeemed loans void the rescue with the reason. Verified against testnet with a test rescue and Telegram off; the Telegram messages themselves have not been seen live yet.
+
+## VigilReserve (v1, Wave 1)
 
 | Item | Value |
 |---|---|

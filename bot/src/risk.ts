@@ -128,6 +128,35 @@ export function maxRepay(debt: bigint, limits: { minNetDebt: bigint; gasCompensa
   return debt > floor ? debt - floor : 0n;
 }
 
+/**
+ * Nominal ICR after repaying `amount`. Mezo applies a repay to accrued interest first, then to
+ * principal (TroveManager._updateTroveDebt), and re-sorts the trove by coll / principal.
+ */
+export function nicrAfterRepay(t: Trove, amount: bigint): bigint {
+  const toPrincipal = amount > t.interest ? amount - t.interest : 0n;
+  const principal = t.principal > toPrincipal ? t.principal - toPrincipal : 0n;
+  return nicr({ ...t, principal });
+}
+
+/**
+ * A trove already in the list whose nominal ICR is closest to `target`: a starting hint for
+ * SortedTroves.findInsertPosition, which then returns the exact neighbours.
+ */
+export function nearestByNicr(all: Trove[], target: bigint, exclude: string): Trove | null {
+  let best: Trove | null = null;
+  let bestGap = 0n;
+  for (const t of all) {
+    if (t.borrower.toLowerCase() === exclude.toLowerCase()) continue;
+    const n = nicr(t);
+    const gap = n > target ? n - target : target - n;
+    if (best === null || gap < bestGap) {
+      best = t;
+      bestGap = gap;
+    }
+  }
+  return best;
+}
+
 /** Repay needed to lift ICR to `target` at `price`. */
 export function repayToReach(coll: bigint, debt: bigint, price: bigint, target: bigint): bigint {
   const maxDebt = (coll * price) / target;
