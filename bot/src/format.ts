@@ -71,6 +71,7 @@ export const helpText = `<b>Vigil</b> watches your MUSD loan on Mezo and warns y
 /redemption &lt;MUSD&gt;: alert when less than that much debt is ahead of you in the redemption queue, with a suggested repay
 /rescue: set up a pre-signed rescue
 /unwatch [address]: stop watching
+/feedback &lt;text&gt;: tell the Vigil team what worked and what didn't
 /help: this message
 
 <b>Rescue</b>: you keep a MUSD reserve in the Vigil contract and sign one capped repay in advance. If your ratio falls below your trigger, or your loan gets too close to the front of Mezo's redemption queue (your guard), Vigil submits it. The contract checks both on-chain. Mezo's own contract checks your signature, so Vigil can't change the amount, the loan or the deadline. Rescue needs an EVM wallet such as MetaMask; Bitcoin-wallet (Passport) accounts get alerts only.

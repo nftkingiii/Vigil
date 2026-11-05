@@ -6,7 +6,7 @@ import { esc, helpText, positionCard } from "./format.ts";
 import { latestSnapshot } from "./monitor.ts";
 import { btc as fmtBtc, levelFor, musd, parseAmount, parsePercent, pct, planLoan, position, usd } from "./risk.ts";
 import { BLOCKING } from "./rescueHealth.ts";
-import { rescues, watches } from "./store.ts";
+import { feedback, rescues, watches } from "./store.ts";
 
 export const DEFAULT_ALERT_ICR = 15n * 10n ** 17n; // 150%
 const MIN_ALERT_ICR = 115n * 10n ** 16n; // 115%
@@ -35,11 +35,15 @@ function parseAlert(arg: string | undefined): bigint | null | "invalid" {
 }
 
 function rescueLine(borrower: string): string {
-  const r = rescues.latest(borrower);
-  if (!r || r.status !== "armed") return `\n\n<b>Rescue</b>: none armed. /rescue to set one up.`;
-  const blocked = r.warning.split(",").some((c) => BLOCKING.has(c));
-  const until = new Date(r.deadline * 1000).toISOString().slice(0, 10);
-  return `\n\n<b>Rescue</b>: ${musd(r.amount)} armed until ${until}${blocked ? " ❌ <b>can't succeed right now</b>, see the last Vigil message" : " ✅"}`;
+  const steps = rescues.armedFor(borrower);
+  if (steps.length === 0) return `\n\n<b>Rescue</b>: none armed. /rescue to set one up.`;
+  const lines = steps.map((r, i) => {
+    const blocked = r.warning.split(",").some((c) => BLOCKING.has(c));
+    const until = new Date(r.deadline * 1000).toISOString().slice(0, 10);
+    const label = steps.length > 1 ? `step ${i + 1}: ` : "";
+    return `${label}${musd(r.amount)} armed until ${until}${i > 0 ? " (runs after the step before)" : blocked ? " ❌ <b>can't succeed right now</b>, see the last Vigil message" : " ✅"}`;
+  });
+  return `\n\n<b>Rescue</b>: ${lines.join("\n   ")}`;
 }
 
 async function statusFor(ctx: Context, borrower: string, alertIcr: bigint) {
@@ -115,6 +119,13 @@ bot.command("redemption", (ctx) => {
   if (!amount) return ctx.reply("Usage: /redemption <MUSD>, e.g. /redemption 50000\nVigil alerts when less than that much other debt is ahead of you in Mezo's redemption queue, and suggests a repay. /redemption off to stop.");
   watches.setRedemptionAlert(ctx.chat.id, amount);
   return ctx.reply(`Redemption threshold set to ${musd(amount)} for ${list.length} address${list.length > 1 ? "es" : ""}. You'll get an alert, with a suggested repay, when less than that is ahead of you.`);
+});
+
+bot.command("feedback", (ctx) => {
+  const text = ctx.match.trim();
+  if (text.length < 3) return ctx.reply("Usage: /feedback <what worked, what confused you, what you wish Vigil did>\nIt goes to the Vigil team; it's stored without your name, and quotes may be published without who said them.");
+  feedback.add(ctx.chat.id, text);
+  return ctx.reply("Thanks, noted. This shapes what Vigil builds next.");
 });
 
 bot.command("unwatch", (ctx) => {
@@ -210,6 +221,7 @@ async function registerCommands() {
     { command: "plan", description: "Plan a new MUSD loan before you borrow" },
     { command: "redemption", description: "Alert when the redemption queue gets close" },
     { command: "unwatch", description: "Stop watching" },
+    { command: "feedback", description: "Tell the Vigil team what to fix" },
     { command: "help", description: "How Vigil works" },
   ]);
 }

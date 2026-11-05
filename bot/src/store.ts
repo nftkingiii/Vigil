@@ -32,6 +32,12 @@ db.exec(`
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS rescues_by_borrower ON rescues (borrower, status);
+  CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL,
+    text        TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Added after launch: databases created earlier lack these columns.
@@ -140,16 +146,38 @@ export const watches = {
   count(): number {
     return Number((db.prepare(`SELECT COUNT(*) AS n FROM watches`).get() as Row).n);
   },
+  borrowerList(): string[] {
+    return (db.prepare(`SELECT DISTINCT borrower FROM watches`).all() as Row[]).map((r) => String(r.borrower));
+  },
   borrowers(): number {
     return Number((db.prepare(`SELECT COUNT(DISTINCT borrower) AS n FROM watches`).get() as Row).n);
   },
 };
 
+export const feedback = {
+  add(chatId: number, text: string): number {
+    return Number(db.prepare(`INSERT INTO feedback (chat_id, text) VALUES (?, ?)`).run(chatId, text.slice(0, 2000)).lastInsertRowid);
+  },
+  count(): number {
+    return Number((db.prepare(`SELECT COUNT(*) AS n FROM feedback`).get() as Row).n);
+  },
+  /** Feedback texts only (no chat ids), newest first, for the operator's write-up. */
+  texts(limit = 200): { text: string; createdAt: string }[] {
+    return (db.prepare(`SELECT text, created_at FROM feedback ORDER BY id DESC LIMIT ?`).all(limit) as Row[]).map((r) => ({
+      text: String(r.text),
+      createdAt: String(r.created_at),
+    }));
+  },
+};
+
 export const rescues = {
-  /** Arming a new rescue replaces any earlier armed one: only the latest nonce can ever be valid. */
+  /**
+   * Arm a signed repay. Stepped rescues use consecutive Mezo nonces, so several can be armed at
+   * once; a new signature for a nonce that already has one replaces it.
+   */
   arm(r: { borrower: string; amount: bigint; nonce: bigint; deadline: number; signature: string }): number {
     db.prepare(`UPDATE rescues SET status = 'void', detail = 'replaced', updated_at = datetime('now')
-                WHERE borrower = ? AND status = 'armed'`).run(r.borrower.toLowerCase());
+                WHERE borrower = ? AND status = 'armed' AND nonce = ?`).run(r.borrower.toLowerCase(), r.nonce.toString());
     const res = db
       .prepare(`INSERT INTO rescues (borrower, amount, nonce, deadline, signature) VALUES (?, ?, ?, ?, ?)`)
       .run(r.borrower.toLowerCase(), r.amount.toString(), r.nonce.toString(), r.deadline, r.signature);
@@ -157,6 +185,14 @@ export const rescues = {
   },
   armed(): Rescue[] {
     return db.prepare(`SELECT * FROM rescues WHERE status = 'armed'`).all().map(toRescue);
+  },
+  /** A borrower's armed steps, in the order they can run (by nonce). */
+  armedFor(borrower: string): Rescue[] {
+    return db
+      .prepare(`SELECT * FROM rescues WHERE status = 'armed' AND borrower = ?`)
+      .all(borrower.toLowerCase())
+      .map(toRescue)
+      .sort((a, b) => (a.nonce < b.nonce ? -1 : 1));
   },
   latest(borrower: string): Rescue | null {
     const row = db

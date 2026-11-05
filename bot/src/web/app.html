@@ -107,6 +107,10 @@
         </div>
       </div>
       <div class="card">
+        <h2>Getting protected</h2>
+        <ol class="steps" id="onboard" style="margin-top:10px"></ol>
+      </div>
+      <div class="card">
         <h2>Your Vigil setup</h2>
         <div class="grid" style="margin-top:10px">
           <div class="stat"><div class="k">Reserve</div><div class="v" id="s-reserve">–</div><div class="h" id="s-wallet">–</div></div>
@@ -207,6 +211,13 @@
         <div><label for="days">Valid for (days)</label><input id="days" inputmode="numeric" value="7"></div>
         <button id="sign">Sign rescue</button>
       </div>
+      <h2 style="margin-top:18px">Stepped rescue (optional)</h2>
+      <p class="sub">Add a second or third repay that runs only after the one before it, at its own, lower trigger: for example 300 MUSD at 135%, then another 300 at 125%. Each step is signed with the next Mezo nonce, so the contract knows which step is live and applies its trigger on-chain. Your reserve must cover every step plus its fee.</p>
+      <div class="row">
+        <div><label for="stp-amt">Step repay (MUSD)</label><input id="stp-amt" inputmode="decimal" placeholder="e.g. 300"></div>
+        <div><label for="stp-trg">Step trigger (%)</label><input id="stp-trg" inputmode="decimal" placeholder="e.g. 125"></div>
+        <button id="addstep" class="ghost">Add next step</button>
+      </div>
       <p class="muted" id="hint" style="margin:10px 0 0;font-size:13px"></p>
     </div>
   </section>
@@ -220,6 +231,7 @@
         <div class="stat"><div class="k">Rescues armed</div><div class="v" id="st-armed">–</div><div class="h">waiting on a trigger or guard</div></div>
         <div class="stat"><div class="k">Rescues executed</div><div class="v" id="st-exec">–</div><div class="h" id="st-repaid">–</div></div>
       </div>
+      <p class="sub" id="st-funnel" style="margin-top:10px"></p>
     </div>
     <div class="card">
       <h2>Rescue log</h2>
@@ -362,10 +374,27 @@ async function load(a) {
   $("s-guard").textContent = BigInt(d.guard) ? fmt(d.guard, 0) + " MUSD" : "off";
   if (p && p.redemptionRank) $("s-guard-h").textContent = `${fmt(p.redemptionBuffer, 0)} MUSD ahead of you now`;
   const lr = d.latestRescue;
+  const done = [
+    [!!p, "Loan open on Mezo", "No loan yet? Plan one in the Plan tab, then open it on testnet.mezo.org."],
+    [d.watched, "Watched in Telegram", `Send /watch ${d.borrower} to @${CFG.bot}.`],
+    [BigInt(d.reserve) > 0n, "Reserve deposited", "Reserve tab: deposit MUSD."],
+    [BigInt(d.activeTrigger || d.trigger) > 0n || BigInt(d.guard) > 0n, "Trigger or redemption guard set", "Reserve tab: set a ratio trigger, a guard, or both."],
+    [(d.steps || []).length > 0, "Rescue signed and armed", "Rescue tab: sign one repay with your wallet."],
+  ];
+  $("onboard").innerHTML = "";
+  for (const [ok, title, how] of done) {
+    const li = document.createElement("li");
+    li.innerHTML = `<b></b> <span class="muted"></span>`;
+    li.querySelector("b").textContent = (ok ? "✓ " : "") + title;
+    li.querySelector("span").textContent = ok ? "" : how;
+    $("onboard").appendChild(li);
+  }
   const blocked = (d.rescueIssues || []).filter((i) => i.blocking);
   $("s-rescue").textContent = lr ? (lr.status === "armed" && blocked.length ? "armed, can't succeed" : lr.status) : "none";
   if (d.rescueIssues && d.rescueIssues.length) log("Rescue check:\n" + d.rescueIssues.map((i) => "• " + i.text).join("\n"));
-  $("s-rescue-h").textContent = lr ? `${fmt(lr.amount, 0)} MUSD · nonce ${lr.nonce}${lr.status === "armed" ? " · until " + new Date(lr.deadline * 1000).toLocaleDateString() : ""}` : "sign one in the Rescue tab";
+  const steps = d.steps || [];
+  if (steps.length > 1) { $("s-rescue").textContent = `${steps.length} steps armed`; }
+  $("s-rescue-h").textContent = steps.length > 1 ? steps.map((s) => `${fmt(s.amount, 0)} @ ${BigInt(s.trigger) ? pct(s.trigger, 0) : "guard"}`).join(" → ") : lr ? `${fmt(lr.amount, 0)} MUSD · nonce ${lr.nonce}${lr.status === "armed" ? " · until " + new Date(lr.deadline * 1000).toLocaleDateString() : ""}` : "sign one in the Rescue tab";
   if (!d.rescueIssues || !d.rescueIssues.length) log(`Loaded ${target}.`);
 }
 function setLevel(cls, text) { const el = $("pos-level"); el.className = "pill " + cls; el.textContent = text; }
@@ -376,6 +405,7 @@ async function loadLog() {
     $("st-armed").textContent = s.armedRescues;
     $("st-exec").textContent = s.executedRescues;
     $("st-repaid").textContent = `${fmt(s.musdRepaid, 0)} MUSD repaid`;
+    if (s.onboarding) $("st-funnel").textContent = `Of ${s.onboarding.watched} watched loans: ${s.onboarding.withReserve} have a reserve, ${s.onboarding.withTriggerOrGuard} a trigger or guard, ${s.onboarding.armed} an armed rescue. ${s.feedbackReceived} pieces of feedback so far.`;
   }).catch(() => {});
   const rows = await (await fetch("/api/rescues")).json();
   $("log-body").innerHTML = rows.length ? "" : `<tr><td colspan="5" class="muted">No rescues yet.</td></tr>`;
@@ -450,15 +480,10 @@ $("setguard").onclick = () => guarded(async () => {
   await send(CFG.vigilReserve, CFG.selectors.setRedemptionGuard + uint(toWei(v)), "Set redemption guard");
   await load(account);
 });
-$("sign").onclick = () => guarded(async () => {
-  if (!account) await connect();
-  await ensureChain();
-  const amount = toWei($("amt").value);
+async function signRescue(amount, nonce) {
   const days = Math.min(30, Math.max(1, Number($("days").value) || 7));
-  await load(account);
-  if (!current) throw new Error("Couldn't load your position.");
   const deadline = Math.floor(Date.now() / 1000) + days * 86400;
-  const message = { amount: amount.toString(), borrower: account, nonce: String(current.nonce), deadline: String(deadline) };
+  const message = { amount: amount.toString(), borrower: account, nonce: String(nonce), deadline: String(deadline) };
   const typed = {
     domain: CFG.typedData.domain,
     primaryType: "RepayMUSD",
@@ -480,6 +505,30 @@ $("sign").onclick = () => guarded(async () => {
   if (!r.ok) throw new Error(d.error || "Vigil rejected the signature");
   log(`Rescue armed ✓ (#${d.id})\nUp to ${fmt(amount)} MUSD will be repaid from your reserve if your trigger or redemption guard is hit, until ${new Date(deadline * 1000).toLocaleString()}.`);
   await load(account);
+}
+$("sign").onclick = () => guarded(async () => {
+  if (!account) await connect();
+  await ensureChain();
+  const amount = toWei($("amt").value);
+  await load(account);
+  if (!current) throw new Error("Couldn't load your position.");
+  await signRescue(amount, current.nonce);
+});
+$("addstep").onclick = () => guarded(async () => {
+  if (!account) await connect();
+  await ensureChain();
+  const amount = toWei($("stp-amt").value);
+  const v = Number($("stp-trg").value);
+  if (!(v > 110 && v <= 500)) throw new Error("Step trigger must be above 110% and at most 500%.");
+  await load(account);
+  if (!current) throw new Error("Couldn't load your position.");
+  const steps = current.steps || [];
+  if (!steps.length) throw new Error("Sign the first rescue above first; a step runs after it.");
+  const nonce = steps.reduce((m, s) => (BigInt(s.nonce) > m ? BigInt(s.nonce) : m), 0n) + 1n;
+  if (nonce >= BigInt(current.nonce) + 4n) throw new Error("Up to 4 steps can be armed at once.");
+  const wei = BigInt(Math.round(v * 100)) * WAD / 10000n;
+  await send(CFG.vigilReserve, CFG.selectors.setStepTrigger + uint(nonce) + uint(wei), `Set step ${steps.length + 1} trigger`);
+  await signRescue(amount, nonce);
 });
 
 const qs = new URLSearchParams(location.search);

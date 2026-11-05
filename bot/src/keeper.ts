@@ -68,12 +68,14 @@ export async function runKeeper(snap: Snapshot) {
       contracts: [
         { address: addresses.borrowerOperationsSignatures, abi: sigOpsAbi, functionName: "getNonce", args: [borrower] },
         { address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [borrower] },
-        { address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [borrower] },
+        { address: addresses.vigilReserve, abi: vigilAbi, functionName: "activeTrigger", args: [borrower] },
         { address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [borrower] },
         { address: addresses.troveManager, abi: troveManagerAbi, functionName: "getTroveStatus", args: [borrower] },
       ],
     });
-    if (nonce !== r.nonce) {
+    // A later step (signed with a future nonce) waits until the steps before it have run.
+    if (nonce < r.nonce) continue;
+    if (nonce > r.nonce) {
       rescues.finish(r.id, "void", `nonce moved (${r.nonce} → ${nonce})`);
       await notifyBorrower(borrower, `⚠️ Your pre-signed rescue is void: you signed another Mezo action since, which used up its nonce. Sign a new one with /rescue.`);
       continue;

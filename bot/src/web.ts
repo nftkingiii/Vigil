@@ -8,10 +8,12 @@ import { addresses, client, mezoTestnet, repayTypedData, sigOpsAbi, vigilAbi } f
 import { latestSnapshot, monitorStatus } from "./monitor.ts";
 import { rescueIssues } from "./rescueHealth.ts";
 import { FEE_BPS, FEE_CAP, maxRepay, musd, pct, parseAmount, planLoan, position, repayToReach, rescueFee } from "./risk.ts";
-import { rescues, watches } from "./store.ts";
+import { feedback, rescues, watches } from "./store.ts";
 import { notifyBorrower, telegramEnabled } from "./telegram.ts";
 
 const MAX_DEADLINE_DAYS = 30;
+/** Most rescue steps a borrower can have armed at once (consecutive Mezo nonces). */
+const MAX_STEPS = 4;
 const startedAt = new Date().toISOString();
 
 const page = readFileSync(new URL("./web/app.html", import.meta.url), "utf8");
@@ -31,6 +33,7 @@ const pageConfig = {
     withdraw: toFunctionSelector("withdraw(uint256,address)"),
     setTrigger: toFunctionSelector("setTrigger(uint256)"),
     setRedemptionGuard: toFunctionSelector("setRedemptionGuard(uint256)"),
+    setStepTrigger: toFunctionSelector("setStepTrigger(uint256,uint256)"),
   },
   bot: "VigilMezoBot",
   fee: { bps: Number(FEE_BPS), cap: FEE_CAP.toString() },
@@ -75,9 +78,10 @@ app.get("/api/position/:address", async (c) => {
   const borrower = getAddress(addr);
   const snap = latestSnapshot();
 
-  const [reserve, trigger, guard, nonce, musdBalance] = await Promise.all([
+  const [reserve, trigger, activeTrigger, guard, nonce, musdBalance] = await Promise.all([
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [borrower] }),
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [borrower] }),
+    client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "activeTrigger", args: [borrower] }),
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [borrower] }),
     client.readContract({ address: addresses.borrowerOperationsSignatures, abi: sigOpsAbi, functionName: "getNonce", args: [borrower] }),
     client.readContract({
@@ -91,6 +95,7 @@ app.get("/api/position/:address", async (c) => {
   const price = snap?.price.ok ? snap.price.price : null;
   const pos = price && snap ? position(snap.troves, borrower, price) : null;
   const latest = rescues.latest(borrower);
+  const liveStep = rescues.armedFor(borrower).find((r) => r.nonce === nonce);
 
   return c.json(
     json({
@@ -107,15 +112,29 @@ app.get("/api/position/:address", async (c) => {
       nonce,
       musdBalance,
       latestRescue: latest && { ...latest, signature: undefined },
+      watched: watches.forBorrower(borrower).length > 0,
+      steps: await Promise.all(
+        rescues.armedFor(borrower).map(async (r) => ({
+          id: r.id,
+          nonce: r.nonce,
+          amount: r.amount,
+          deadline: r.deadline,
+          live: r.nonce === nonce,
+          trigger:
+            (await client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "stepTriggerOf", args: [borrower, r.nonce] })) ||
+            trigger,
+        })),
+      ),
       // Same checks the keeper runs each minute: why the armed rescue can't succeed, if it can't.
+      activeTrigger,
       rescueIssues:
-        latest?.status === "armed" && snap
+        liveStep && snap
           ? rescueIssues({
-              amount: latest.amount,
-              deadline: latest.deadline,
+              amount: liveStep.amount,
+              deadline: liveStep.deadline,
               now: Math.floor(Date.now() / 1000),
               reserve,
-              trigger,
+              trigger: activeTrigger,
               guard,
               debt: pos?.debt ?? null,
               limits: snap.system,
@@ -174,17 +193,27 @@ app.post("/api/rescue", async (c) => {
     functionName: "getNonce",
     args: [getAddress(borrower)],
   });
-  if (onchainNonce !== n) return c.json({ error: `nonce is ${onchainNonce}, signature used ${n}` }, 400);
+  if (n < onchainNonce || n >= onchainNonce + BigInt(MAX_STEPS)) {
+    return c.json({ error: `nonce is ${onchainNonce}; a signature must use it, or one of the next ${MAX_STEPS - 1} for a later step (got ${n})` }, 400);
+  }
 
-  const [reserve, trigger, guard] = await Promise.all([
+  const [reserve, baseTrigger, stepTrigger, guard] = await Promise.all([
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf", args: [getAddress(borrower)] }),
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "triggerOf", args: [getAddress(borrower)] }),
+    client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "stepTriggerOf", args: [getAddress(borrower), n] }),
     client.readContract({ address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf", args: [getAddress(borrower)] }),
   ]);
+  const trigger = stepTrigger || baseTrigger; // what applies to this step
   if (trigger === 0n && guard === 0n) return c.json({ error: "set a ratio trigger or a redemption guard first" }, 400);
   const fee = rescueFee(amt);
-  if (reserve < amt + fee) {
-    return c.json({ error: `reserve must cover the repay plus the ${musd(fee, 2)} rescue fee: deposit ${musd(amt + fee - reserve, 2)} more` }, 400);
+  // Every armed step draws on the same reserve: it must cover them all, each with its fee.
+  const others = rescues.armedFor(borrower).filter((r) => r.nonce !== n && r.nonce >= onchainNonce);
+  const needed = others.reduce((a, r) => a + r.amount + rescueFee(r.amount), amt + fee);
+  if (reserve < needed) {
+    return c.json(
+      { error: `reserve must cover every armed step plus its 0.5% rescue fee (${musd(needed, 2)} in all): deposit ${musd(needed - reserve, 2)} more` },
+      400,
+    );
   }
 
   const snap = latestSnapshot();
@@ -199,7 +228,7 @@ app.post("/api/rescue", async (c) => {
   const id = rescues.arm({ borrower, amount: amt, nonce: n, deadline: Number(dl), signature });
   await notifyBorrower(
     borrower,
-    `🛟 Rescue armed: up to ${musd(amt)} will be repaid from your Vigil reserve ${[
+    `🛟 Rescue ${n > onchainNonce ? `step ${n - onchainNonce + 1n} ` : ""}armed: up to ${musd(amt)} will be repaid from your Vigil reserve ${[
       trigger ? `if your ratio drops below ${pct(trigger, 1)}` : "",
       guard ? `if less than ${musd(guard)} of other debt is ahead of you in Mezo's redemption queue` : "",
     ]
@@ -209,8 +238,44 @@ app.post("/api/rescue", async (c) => {
   return c.json({ ok: true, id });
 });
 
+/**
+ * Onboarding funnel over watched loans, read on-chain: how many have a reserve, a trigger or guard,
+ * and an armed rescue. Cached for a minute; counts only.
+ */
+let funnelCache: { at: number; value: Record<string, number> } | null = null;
+async function funnel() {
+  if (funnelCache && Date.now() - funnelCache.at < 60_000) return funnelCache.value;
+  const list = watches.borrowerList() as `0x${string}`[];
+  const reads = list.length
+    ? await client.multicall({
+        allowFailure: true,
+        contracts: list.flatMap((b) => [
+          { address: addresses.vigilReserve, abi: vigilAbi, functionName: "reserveOf" as const, args: [b] as const },
+          { address: addresses.vigilReserve, abi: vigilAbi, functionName: "activeTrigger" as const, args: [b] as const },
+          { address: addresses.vigilReserve, abi: vigilAbi, functionName: "guardOf" as const, args: [b] as const },
+        ]),
+      })
+    : [];
+  const armed = new Set(rescues.armed().map((r) => r.borrower.toLowerCase()));
+  let withReserve = 0;
+  let withCondition = 0;
+  list.forEach((_, i) => {
+    const [res, trg, grd] = [reads[i * 3], reads[i * 3 + 1], reads[i * 3 + 2]];
+    if (res?.status === "success" && (res.result as bigint) > 0n) withReserve++;
+    if ((trg?.status === "success" && (trg.result as bigint) > 0n) || (grd?.status === "success" && (grd.result as bigint) > 0n)) withCondition++;
+  });
+  const value = {
+    watched: list.length,
+    withReserve,
+    withTriggerOrGuard: withCondition,
+    armed: list.filter((b) => armed.has(b.toLowerCase())).length,
+  };
+  funnelCache = { at: Date.now(), value };
+  return value;
+}
+
 /** Public counts: how much Vigil is watching and has done. No addresses, no chat ids. */
-app.get("/api/stats", (c) => {
+app.get("/api/stats", async (c) => {
   const r = rescues.stats();
   return c.json(
     json({
@@ -218,6 +283,8 @@ app.get("/api/stats", (c) => {
       watches: watches.count(),
       armedRescues: r.armed,
       executedRescues: r.executed,
+      onboarding: await funnel().catch(() => null),
+      feedbackReceived: feedback.count(),
       musdRepaid: r.repaid,
       vigilReserve: addresses.vigilReserve,
       feeBps: Number(FEE_BPS),
