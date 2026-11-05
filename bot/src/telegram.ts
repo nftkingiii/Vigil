@@ -57,7 +57,9 @@ async function statusFor(ctx: Context, borrower: string, alertIcr: bigint) {
       html,
     );
   }
-  return ctx.reply(positionCard(p, snap.price.price, alertIcr, levelFor(p, alertIcr), snap.system) + rescueLine(borrower), html);
+  const w = (ctx.chat ? watches.forChat(ctx.chat.id) : []).find((x) => x.borrower.toLowerCase() === borrower.toLowerCase());
+  const threshold = w?.redemptionAlert ? `\n<b>Redemption threshold</b>: ${musd(w.redemptionAlert)} of debt ahead${p.redemptionBuffer < w.redemptionAlert ? " ⚠️ crossed" : " ✅"}` : "";
+  return ctx.reply(positionCard(p, snap.price.price, alertIcr, levelFor(p, alertIcr), snap.system) + threshold + rescueLine(borrower), html);
 }
 
 bot.command("start", (ctx) =>
@@ -99,6 +101,20 @@ bot.command("alerts", (ctx) => {
   if (list.length === 0) return ctx.reply("Nothing to update. Send /watch 0xYourAddress first.");
   for (const w of list) watches.upsert(ctx.chat.id, w.borrower, alert);
   return ctx.reply(`Alert line set to ${pct(alert, 0)} for ${list.length} address${list.length > 1 ? "es" : ""}.`);
+});
+
+bot.command("redemption", (ctx) => {
+  const arg = ctx.match.trim().replace(/,/g, "");
+  const list = watches.forChat(ctx.chat.id);
+  if (list.length === 0) return ctx.reply("Nothing to update. Send /watch 0xYourAddress first.");
+  if (arg === "off" || arg === "0") {
+    watches.setRedemptionAlert(ctx.chat.id, null);
+    return ctx.reply("Redemption threshold off. You still get the front-of-queue alert.");
+  }
+  const amount = parseAmount(arg);
+  if (!amount) return ctx.reply("Usage: /redemption <MUSD>, e.g. /redemption 50000\nVigil alerts when less than that much other debt is ahead of you in Mezo's redemption queue, and suggests a repay. /redemption off to stop.");
+  watches.setRedemptionAlert(ctx.chat.id, amount);
+  return ctx.reply(`Redemption threshold set to ${musd(amount)} for ${list.length} address${list.length > 1 ? "es" : ""}. You'll get an alert, with a suggested repay, when less than that is ahead of you.`);
 });
 
 bot.command("unwatch", (ctx) => {
@@ -192,6 +208,7 @@ async function registerCommands() {
     { command: "alerts", description: "Change your alert line" },
     { command: "rescue", description: "Set up a pre-signed rescue" },
     { command: "plan", description: "Plan a new MUSD loan before you borrow" },
+    { command: "redemption", description: "Alert when the redemption queue gets close" },
     { command: "unwatch", description: "Stop watching" },
     { command: "help", description: "How Vigil works" },
   ]);

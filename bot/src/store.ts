@@ -35,7 +35,11 @@ db.exec(`
 `);
 
 // Added after launch: databases created earlier lack these columns.
-for (const ddl of [`ALTER TABLE rescues ADD COLUMN warning TEXT`]) {
+for (const ddl of [
+  `ALTER TABLE rescues ADD COLUMN warning TEXT`,
+  `ALTER TABLE watches ADD COLUMN redemption_alert TEXT`, // MUSD of debt ahead, 1e18; NULL = off
+  `ALTER TABLE watches ADD COLUMN below_redemption INTEGER NOT NULL DEFAULT 0`,
+]) {
   try {
     db.exec(ddl);
   } catch (e) {
@@ -50,6 +54,9 @@ export interface Watch {
   lastLevel: string;
   lastRank: number | null;
   pricePaused: boolean;
+  /** Alert when less than this much MUSD of other debt is ahead in the redemption queue. */
+  redemptionAlert: bigint | null;
+  belowRedemption: boolean;
 }
 
 export interface Rescue {
@@ -76,6 +83,8 @@ const toWatch = (r: Row): Watch => ({
   lastLevel: String(r.last_level),
   lastRank: r.last_rank == null ? null : Number(r.last_rank),
   pricePaused: Number(r.price_paused) === 1,
+  redemptionAlert: r.redemption_alert == null ? null : BigInt(String(r.redemption_alert)),
+  belowRedemption: Number(r.below_redemption) === 1,
 });
 
 const toRescue = (r: Row): Rescue => ({
@@ -118,6 +127,15 @@ export const watches = {
     db.prepare(
       `UPDATE watches SET last_level = ?, last_rank = ?, price_paused = ? WHERE chat_id = ? AND borrower = ?`,
     ).run(level, rank, pricePaused ? 1 : 0, chatId, borrower.toLowerCase());
+  },
+  setRedemptionAlert(chatId: number, amount: bigint | null): number {
+    const res = db
+      .prepare(`UPDATE watches SET redemption_alert = ?, below_redemption = 0 WHERE chat_id = ?`)
+      .run(amount === null ? null : amount.toString(), chatId);
+    return Number(res.changes);
+  },
+  setBelowRedemption(chatId: number, borrower: string, below: boolean) {
+    db.prepare(`UPDATE watches SET below_redemption = ? WHERE chat_id = ? AND borrower = ?`).run(below ? 1 : 0, chatId, borrower.toLowerCase());
   },
   count(): number {
     return Number((db.prepare(`SELECT COUNT(*) AS n FROM watches`).get() as Row).n);

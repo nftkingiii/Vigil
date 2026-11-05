@@ -126,6 +126,42 @@ export function guardReach(all: Trove[], price: bigint, exclude: string): bigint
   return reach;
 }
 
+/**
+ * Smallest repay that puts at least `target` MUSD of other debt ahead of `borrower` in the
+ * redemption queue. Repaying lowers principal (after interest, which goes first), raising the
+ * loan's nominal ICR past the troves it must move behind. Returns null when even Mezo's largest
+ * allowed repay can't get there (more collateral is the fix then).
+ */
+export function repayForDebtAhead(
+  all: Trove[],
+  borrower: string,
+  price: bigint,
+  target: bigint,
+  limits: { minNetDebt: bigint; gasCompensation: bigint },
+): bigint | null {
+  const me = all.find((t) => t.borrower.toLowerCase() === borrower.toLowerCase());
+  if (!me) return null;
+  const others = all
+    .filter((t) => t !== me && icr(t.coll, debtOf(t), price) >= MCR)
+    .sort((a, b) => (nicr(a) < nicr(b) ? -1 : nicr(a) > nicr(b) ? 1 : 0));
+  let ahead = 0n;
+  let passNicr: bigint | null = null; // nominal ICR the loan must exceed
+  for (const t of others) {
+    ahead += debtOf(t);
+    if (ahead >= target) {
+      passNicr = nicr(t);
+      break;
+    }
+  }
+  if (passNicr === null) return null; // not that much redeemable debt in the whole system
+  if (nicr(me) > passNicr) return 0n;
+  // principal must drop below coll * 1e20 / passNicr
+  const maxPrincipal = (me.coll * 10n ** 20n) / passNicr - 1n;
+  const repay = me.interest + (me.principal - maxPrincipal);
+  const rounded = ((repay + WAD - 1n) / WAD) * WAD; // whole MUSD, rounded up
+  return rounded <= maxRepay(debtOf(me), limits) ? rounded : null;
+}
+
 export type Level = "ok" | "watch" | "danger" | "liquidatable";
 
 /** Alert level from ICR against the user's own alert line (default 150%). */

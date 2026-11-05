@@ -14,6 +14,7 @@ import {
   planLoan,
   parseAmount,
   guardReach,
+  repayForDebtAhead,
   parsePercent,
   position,
   repayToReach,
@@ -178,4 +179,21 @@ test("guard reach counts redeemable debt in the first 60 troves of the queue onl
   assert.equal(reach, expected);
   const plan = planLoan(many, { coll: e18(0.1), borrow: e18(5_000), price: e18(80_000), system: testnetSystem });
   assert.ok(plan.suggestion.guard === null || plan.suggestion.guard <= reach, "never suggests a guard the contract can't see");
+});
+
+test("repay for debt ahead: smallest repay that moves the loan behind enough redeemable debt", () => {
+  const limits = { minNetDebt: e18(1_800), gasCompensation: e18(200) };
+  // Queue at $80k by NICR: me (1 BTC, 60,000) is first; then 0xa 55,000, 0xb 50,000, 0xc 45,000.
+  const me = trove("0xme", 1, 60_000);
+  const all = [me, trove("0xa", 1, 55_000), trove("0xb", 1, 50_000), trove("0xc", 1, 45_000)];
+  const price = e18(80_000);
+  // To have 100,000 ahead, the loan must pass 0xa and 0xb: principal under 50,000.
+  const r = repayForDebtAhead(all, "0xme", price, e18(100_000), limits)!;
+  assert.equal(r, e18(10_001));
+  const after = position([{ ...me, principal: me.principal - r }, ...all.slice(1)], "0xme", price)!;
+  assert.ok(after.redemptionBuffer >= e18(100_000), "target reached");
+  // Already behind enough debt: no repay needed.
+  assert.equal(repayForDebtAhead(all, "0xc", price, e18(55_000), limits), 0n);
+  // More than exists in the system: null.
+  assert.equal(repayForDebtAhead(all, "0xme", price, e18(1_000_000), limits), null);
 });

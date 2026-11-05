@@ -51,6 +51,7 @@ app.get("/health", async (c) => {
       service: "vigil",
       revision: config.revision,
       startedAt,
+      uptimeSec: Math.round((Date.now() - new Date(startedAt).getTime()) / 1000),
       chainId: mezoTestnet.id,
       vigilReserve: addresses.vigilReserve,
       monitor,
@@ -58,6 +59,10 @@ app.get("/health", async (c) => {
       telegram: telegramEnabled,
       watches: watches.count(),
       armedRescues: rescues.armed().length,
+      lastRescue: (() => {
+        const r = rescues.history(1)[0];
+        return r ? { id: r.id, status: r.status, txHash: r.txHash, detail: r.detail, createdAt: r.createdAt } : null;
+      })(),
     },
     healthy ? 200 : 503,
   );

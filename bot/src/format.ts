@@ -68,6 +68,7 @@ export const helpText = `<b>Vigil</b> watches your MUSD loan on Mezo and warns y
 /status: your positions now
 /alerts &lt;percent&gt;: change your alert line, e.g. /alerts 160
 /plan &lt;BTC&gt; &lt;MUSD&gt;: plan a new loan before you borrow, e.g. /plan 0.05 2500
+/redemption &lt;MUSD&gt;: alert when less than that much debt is ahead of you in the redemption queue, with a suggested repay
 /rescue: set up a pre-signed rescue
 /unwatch [address]: stop watching
 /help: this message
