@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {VigilReserve} from "../src/VigilReserve.sol";
+import {RescueRules} from "../src/RescueRules.sol";
 import {IERC20Min, IBorrowerOperationsSignatures, ITroveManager} from "../src/interfaces/IMezo.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
 import {MezoTestnet, IBorrowerOperationsTest, ITroveManagerTest} from "./MezoTestnet.sol";
@@ -148,7 +149,7 @@ contract VigilReserveForkTest is Test {
     function test_Reject_AboveTrigger() public {
         (bytes memory sig, uint256 deadline) = _signNow(RESCUE);
         uint256 icr = _icr();
-        vm.expectRevert(abi.encodeWithSelector(VigilReserve.AboveTrigger.selector, icr, TRIGGER));
+        vm.expectRevert(abi.encodeWithSelector(RescueRules.AboveTrigger.selector, icr, TRIGGER));
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
     }
 
@@ -200,7 +201,7 @@ contract VigilReserveForkTest is Test {
         vm.prank(borrower);
         vigil.setTrigger(0);
         _crash();
-        vm.expectRevert(VigilReserve.RescueOff.selector);
+        vm.expectRevert(RescueRules.RescueOff.selector);
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
     }
 
@@ -318,7 +319,7 @@ contract VigilReserveForkTest is Test {
         (bytes memory sig, uint256 deadline) = _signNow(RESCUE);
         (bool ok,,) = vigil.canRescue(borrower, RESCUE);
         assertFalse(ok);
-        vm.expectPartialRevert(VigilReserve.NotTriggered.selector);
+        vm.expectPartialRevert(RescueRules.NotTriggered.selector);
         vigil.rescue(borrower, RESCUE, deadline, sig, address(0), address(0));
     }
 
@@ -344,6 +345,52 @@ contract VigilReserveForkTest is Test {
         assertEq(vigil.reserveOf(borrower), RESERVE - RESCUE - FEE);
     }
 
+    // ------------------------------------------------------------------ stepped rescues
+
+    /// Step 1 (nonce 0) at 150%, step 2 (nonce 1) at 125%. Both signed up front.
+    function test_SteppedRescues_EachStepUsesItsOwnTrigger() public {
+        uint256 step = 4_000e18; // two steps plus two 20 MUSD fees fit in the 10,000 reserve
+        uint256 deadline = block.timestamp + 7 days;
+        bytes memory step1 = _sign(step, 0, deadline);
+        bytes memory step2 = _sign(step, 1, deadline);
+        vm.startPrank(borrower);
+        vigil.setTrigger(0);
+        vigil.setStepTrigger(0, 1.5e18);
+        vigil.setStepTrigger(1, 1.25e18);
+        vm.stopPrank();
+        assertEq(vigil.activeTrigger(borrower), 1.5e18);
+
+        // Step 2 can't jump the queue: its signature uses nonce 1, Mezo is at nonce 0.
+        _crash(); // ~137%: under step 1's 150%
+        vm.expectRevert(bytes("BorrowerOperationsSignatures: Invalid signature"));
+        vigil.rescue(borrower, step, deadline, step2, address(0), address(0));
+
+        vigil.rescue(borrower, step, deadline, step1, address(0), address(0));
+        assertEq(sigOps.getNonce(borrower), 1);
+        assertEq(vigil.activeTrigger(borrower), 1.25e18, "step 2's trigger is now live");
+
+        // Back between 125% and 150%: step 1's trigger no longer applies, step 2 waits.
+        oracle.set(int256(47_000e18));
+        uint256 icr = _icr();
+        assertGt(icr, 1.25e18);
+        assertLt(icr, 1.5e18);
+        vm.expectRevert(abi.encodeWithSelector(RescueRules.AboveTrigger.selector, icr, 1.25e18));
+        vigil.rescue(borrower, step, deadline, step2, address(0), address(0));
+
+        // Under 125%: step 2 runs.
+        oracle.set(int256(40_000e18));
+        assertLt(_icr(), 1.25e18);
+        vigil.rescue(borrower, step, deadline, step2, address(0), address(0));
+        assertEq(sigOps.getNonce(borrower), 2);
+        assertEq(vigil.reserveOf(borrower), RESERVE - 2 * (step + 20e18), "two repays plus two 0.5% fees");
+    }
+
+    function test_StepTriggerMustBeAboveLiquidationLine() public {
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(RescueRules.TriggerTooLow.selector, 1.1e18));
+        vigil.setStepTrigger(0, 1.1e18);
+    }
+
     // ------------------------------------------------------------------ fee
 
     function test_FeeIsHalfPercentCappedAt25() public view {
@@ -365,7 +412,7 @@ contract VigilReserveForkTest is Test {
 
     function test_TriggerMustBeAboveLiquidationLine() public {
         vm.prank(borrower);
-        vm.expectRevert(abi.encodeWithSelector(VigilReserve.TriggerTooLow.selector, 1.1e18));
+        vm.expectRevert(abi.encodeWithSelector(RescueRules.TriggerTooLow.selector, 1.1e18));
         vigil.setTrigger(1.1e18);
     }
 }

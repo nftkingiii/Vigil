@@ -52,3 +52,16 @@ interface IBorrowerOperationsSignatures {
 
     function getNonce(address user) external view returns (uint256);
 }
+
+interface IBorrowerOperations {
+    /// Repays the caller's own trove. Only msg.sender's debt can be repaid this way.
+    function repayMUSD(uint256 amount, address upperHint, address lowerHint) external;
+}
+
+/// The parts of a Safe (v1.4.1) a module uses. Mezo Passport accounts are Safes.
+interface ISafe {
+    function isModuleEnabled(address module) external view returns (bool);
+    function execTransactionFromModuleReturnData(address to, uint256 value, bytes memory data, uint8 operation)
+        external
+        returns (bool success, bytes memory returnData);
+}
