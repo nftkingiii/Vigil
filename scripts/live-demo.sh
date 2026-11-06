@@ -4,7 +4,7 @@
 # the rescue itself is submitted by the live Vigil keeper, not by this script.
 set -euo pipefail
 
-STEP=${1:?usage: live-demo.sh open|reserve|arm|reject-above|trigger|reject-tamper|borrow|v1-withdraw|guard-reserve|reject-guard|guard}
+STEP=${1:?usage: live-demo.sh open|reserve|arm|reject-above|trigger|reject-tamper|borrow|v1-withdraw|guard-reserve|reject-guard|guard|v2-withdraw|step-reserve|step-trigger|arm-nonce|reject-step}
 KEY_FILE=${KEY_FILE:-$HOME/.vigil/deployer.key}
 RPC=${RPC:-https://rpc.test.mezo.org}
 VIGIL_URL=${VIGIL_URL:-https://vigil-mezo.up.railway.app}
@@ -15,7 +15,8 @@ BORROWER_OPS=0xCdF7028ceAB81fA0C6971208e83fa7872994beE5
 SIG_OPS=0xD757e3646AF370b15f32EB557F0F8380Df7D639e
 VIGIL_V1=0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E # Wave 1 (ratio trigger only)
 VIGIL_V2=0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4 # Wave 2 redemption-guard proof (Nov 4)
-VIGIL=${VIGIL:-0x29FB8a330cD5c114B30F0C69b50Bb459dE023885} # Wave 2: ratio trigger + redemption guard + submitter fee
+VIGIL_V3=0x29FB8a330cD5c114B30F0C69b50Bb459dE023885 # Wave 2: + submitter fee
+VIGIL=${VIGIL:-0xF968043b58Bf9993FE3ADC1157C7D186242DE0EB} # Wave 2: + stepped rescues (v4)
 ZERO=0x0000000000000000000000000000000000000000
 
 KEY=$(cat "$KEY_FILE")
@@ -86,4 +87,30 @@ JSON
       "$ME" 300000000000000000000 "$(cat "$STATE/deadline")" "$(cat "$STATE/sig")" $ZERO $ZERO ;;
   guard) # raise the guard to 60,000 MUSD: less than that is ahead, so the live keeper may rescue
     send "setRedemptionGuard(60,000)" "$VIGIL" "setRedemptionGuard(uint256)" 60000000000000000000000 ;;
+  # ---- Stepped rescues (VigilReserve v4)
+  v2-withdraw) # take the 100 MUSD left in the v2 reserve back to the wallet
+    send "v2 withdraw(100)" "$VIGIL_V2" "withdraw(uint256,address)" 100000000000000000000 "$ME" ;;
+  step-reserve) # 210 MUSD reserve in v4: two 100 MUSD steps plus two 0.50 MUSD fees fit
+    send "approve" "$MUSD" "approve(address,uint256)" $VIGIL 210000000000000000000
+    send "deposit" "$VIGIL" "deposit(address,uint256)" "$ME" 210000000000000000000 ;;
+  step-trigger) # step-trigger <nonce> <trigger, 1e18 = 100%>
+    send "setStepTrigger($2, $3)" "$VIGIL" "setStepTrigger(uint256,uint256)" "$2" "$3" ;;
+  arm-nonce) # arm-nonce <nonce> <amount wei>: sign RepayMUSD for that nonce and hand it to the live service
+    NONCE=$2; AMOUNT=$3; DEADLINE=$(( $(date +%s) + 7*86400 ))
+    cat > "$STATE/typed-$NONCE.json" <<JSON
+{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],
+"RepayMUSD":[{"name":"amount","type":"uint256"},{"name":"borrower","type":"address"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"}]},
+"primaryType":"RepayMUSD",
+"domain":{"name":"BorrowerOperationsSignatures","version":"1","chainId":31611,"verifyingContract":"$SIG_OPS"},
+"message":{"amount":"$AMOUNT","borrower":"$ME","nonce":"$NONCE","deadline":"$DEADLINE"}}
+JSON
+    SIG=$($CAST wallet sign --data --from-file "$STATE/typed-$NONCE.json" --private-key "$KEY")
+    echo "$SIG" > "$STATE/sig-$NONCE"; echo "$DEADLINE" > "$STATE/deadline-$NONCE"; echo "$AMOUNT" > "$STATE/amount-$NONCE"
+    curl -sS -X POST "$VIGIL_URL/api/rescue" -H 'content-type: application/json' \
+      -d "{\"borrower\":\"$ME\",\"amount\":\"$AMOUNT\",\"nonce\":\"$NONCE\",\"deadline\":\"$DEADLINE\",\"signature\":\"$SIG\"}"
+    echo ;;
+  reject-step) # reject-step <nonce>: submit that step while the ratio is above its trigger; VigilReserve must refuse
+    N=$2
+    GAS=1500000 send_expect_revert "rescue(step nonce $N, above its trigger)" "$VIGIL" "rescue(address,uint256,uint256,bytes,address,address)" \
+      "$ME" "$(cat "$STATE/amount-$N")" "$(cat "$STATE/deadline-$N")" "$(cat "$STATE/sig-$N")" $ZERO $ZERO ;;
 esac

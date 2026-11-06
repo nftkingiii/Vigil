@@ -45,8 +45,29 @@ Both verified on the explorer. Read back: v4 `VERSION()` 4, `FEE_BPS()` 50; modu
 - It then went through the web page's API: `GET /api/passport/account`, `POST /api/passport/prepare` (amount 300, trigger 140%, 1 rescue), a wallet-style `signMessage` signature, and `POST /api/passport/submit`. The keeper relayed it and the module was enabled with the settings saved.
 - With the fork's price lowered to $70,000 (ratio 129.5%), the running service's keeper rescued the account on its own. Ratio 129.5% → 145.7%; the account's MUSD went 2,500 → 2,198.5 (300 repay + 1.50 fee).
 
+### Live stepped rescue on VigilReserve v4: 2026-11-06
+
+Same burner borrower ([`0x16f2981D…CB4f`](https://explorer.test.mezo.org/address/0x16f2981DF2027e66857e3a857d6d3B2F858eCB4f)), ratio 134.0% at the start, base trigger off.
+
+**Scripted setup** (`scripts/live-demo.sh`, not a user flow):
+
+| Step | Tx | Result |
+|---|---|---|
+| Withdraw 100 MUSD from the v2 reserve | [`0x3dafa54e…8b62`](https://explorer.test.mezo.org/tx/0x3dafa54e3665adbcfd189114366599cd705fac9a3d75384ddd44e52e01578b62) | ok |
+| Approve and deposit 210 MUSD into v4 | [`0x2e06a9ab…2238`](https://explorer.test.mezo.org/tx/0x2e06a9ab2164a31d359a2643ec190fcb643ade8a375125b9c5d7394092aa2238), [`0x643bf165…e1c4`](https://explorer.test.mezo.org/tx/0x643bf1656f86feb4b8c9faab76f4a59cc7db4e96eb5c1dc5e69ea657667fe1c4) | ok. Covers two 100 MUSD steps and two 0.50 fees |
+| Step triggers: nonce 2 at 140%, nonce 3 at 125% | [`0x05d9c336…ed15`](https://explorer.test.mezo.org/tx/0x05d9c3368cc695365fa2cecb9e182bee377198b8b06fb8aec1bd0edc4865ed15), [`0x90f81924…2c43`](https://explorer.test.mezo.org/tx/0x90f8192480b0b09849c3702b7b306b3a35f915d88ebd89e4589799a11fa92c43) | ok |
+| Sign RepayMUSD(100) for nonce 3 and nonce 2; POST both to the live `/api/rescue` | off-chain | `{"ok":true,"id":3}`, `{"ok":true,"id":4}`. Two steps armed at once |
+
+**Step 1, submitted by the live keeper:** [`0x9177bc71…a806`](https://explorer.test.mezo.org/tx/0x9177bc71a154504b508bfcd1fc180bfcb16a89c52709f4c36262ed9fc2f0a806), block 16,602,816, 04:30:45 UTC. 100 MUSD, ICR **134.08% → 140.31%**, reason 1 (ratio), fee 0.50 MUSD. Mezo nonce 2 → 3, and `activeTrigger` became step 2's 125%.
+
+**Step 2 refused while above its own trigger** (scripted attempt): [`0x08f10807…3580`](https://explorer.test.mezo.org/tx/0x08f10807ca405782e9c1253d9892d0c26c2ef84d48bb48ac4877bdfbe80c3580) reverted with `AboveTrigger(icr 1.4025, trigger 1.25)`, replayed at the block before. Step 1's 140% no longer applies.
+
+**Step 2, submitted by the live keeper** after its trigger was raised to 150% ([`0xb4e2d016…5e8f`](https://explorer.test.mezo.org/tx/0xb4e2d016c5d215254fc8b4661b5a1956b4af0a80f82a02ae733ee55280855e8f), scripted): [`0x629b058b…e5b3`](https://explorer.test.mezo.org/tx/0x629b058b4ce2f35600766c95256080e3f2fa594beaefd03bec123b5b719ae5b3), block 16,602,844, 04:32:41 UTC. 100 MUSD, ICR **140.42% → 147.25%**, fee 0.50. Mezo nonce 3 → 4, reserve 210 → 9 MUSD.
+
+**Gas with the keeper's repay hints, live:** 455,853 and 438,753 gas for the two rescues. Before hints, the Oct 16 and Nov 4 rescues used 3,677,444 and 6,205,031.
+
 **Not yet done:**
-- the same flow on live testnet;
+- the Passport flow on live testnet (it needs a Passport loan, about 0.04 testnet BTC);
 - a real Unisat or OKX wallet signing through the page (the wallet calls are written to their documented `signMessage(message, "ecdsa")` API, but no real wallet has been tried yet).
 
 ### VigilReserve v3: fixed rescue fee
