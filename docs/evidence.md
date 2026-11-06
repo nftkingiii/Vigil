@@ -20,7 +20,36 @@ Wave 1 feedback asked for a new job for MUSD (a redemption-triggered rescue), Me
 
 v1 (`0x9829…cf3E`, below) stays deployed for its Wave 1 history.
 
-### VigilReserve v3: fixed rescue fee (current)
+### Declared Wave 2 goals: Passport accounts and stepped rescues (from 2026-11-05)
+
+| Contract | Address | Deploy tx |
+|---|---|---|
+| `VigilReserve` v4 (EVM wallets, stepped rescues) | [`0xF968043b58Bf9993FE3ADC1157C7D186242DE0EB`](https://explorer.test.mezo.org/address/0xF968043b58Bf9993FE3ADC1157C7D186242DE0EB) | [`0xa7c9e7fb…a148`](https://explorer.test.mezo.org/tx/0xa7c9e7fbc14c60336238e993b87ffa8807aff14c82fe53e6b770e519dd83a148), block 16,594,948 |
+| `VigilSafeModule` (Mezo Passport accounts) | [`0x1F5a0031Bfd7db38249eC8a4dcbc0FDA0e96c7B3`](https://explorer.test.mezo.org/address/0x1F5a0031Bfd7db38249eC8a4dcbc0FDA0e96c7B3) | [`0xa46d4700…fbb8`](https://explorer.test.mezo.org/tx/0xa46d4700d7af6d5e8ceabf975c61a71f38cb6d010ac9607d29c308ee65a3fbb8), block 16,594,948 |
+
+Both verified on the explorer. Read back: v4 `VERSION()` 4, `FEE_BPS()` 50; module `VERSION()` 1, `borrowerOperations()` `0xCdF7…beE5`; both `sortedTroves()` `0x722E…68fA`. Shared rules (trigger, guard, fee) live in `RescueRules.sol`.
+
+**What a Mezo Passport account is** (read from Mezo's verified contracts and the `@mezo-org/orangekit-smart-account` package): a Safe v1.4.1 proxy (singleton `0x4167…461a`) created by OrangeKitSafeFactory `0x7E80…1052`, owned by one BitcoinSafeOwner proxy (singleton `0x8873…a4d5`) that checks BIP-137 Bitcoin message signatures. MUSD's `BorrowerOperationsSignatures` verifies with `ECDSA.recover` only, which is why Passport accounts couldn't use the Wave 1 rescue.
+
+**Fork tests, 34/34 (2026-11-05)**:
+
+| Suite | Tests | What it shows |
+|---|---|---|
+| `VigilReserve.t.sol` | 21 | Wave 1 and 2 rules, plus stepped rescues: step 2 (nonce 1) can't run before step 1, step 1's trigger stops applying once it ran, step 2 runs under its own 125% trigger, the reserve pays both steps and both fees |
+| `VigilSafeModule.t.sol` | 11 | On the real Passport account [`0xf13A…edf1`](https://explorer.test.mezo.org/address/0xf13Aa8136D1f6Fbb0f1adf4bC4bd4f70Ec21edf1) (Safe 1.4.1, OrangeKit 4337 module, one BitcoinSafeOwner, active loan): rescue as the Safe from its own MUSD, fee to the submitter, stepped triggers, redemption guard; refusals for module off, above trigger, no rescues left, MUSD too low, stale oracle, low trigger; settings only for the caller. The account's owner is stood in for by acting as the Safe |
+| `PassportOptIn.t.sol` | 2 | No stand-ins: a Bitcoin key gets an account from Mezo's factory, opens a loan with a BIP-137 signed Safe tx, opts in with **one** signed MultiSendCallOnly batch (enable module + configure) verified by Mezo's BitcoinSafeOwner, and is rescued (300 MUSD, 1.50 fee). A wrong Bitcoin key is refused |
+
+**Service end to end on a local fork of Mezo testnet (anvil, 2026-11-06; not live testnet):**
+- The service's signature code (`bot/src/passport.ts`) enabled the module through the real BitcoinSafeOwner for all three address types it supports: native SegWit, legacy, nested SegWit.
+- A fresh Passport account opened a loan with a Bitcoin-signed Safe tx.
+- It then went through the web page's API: `GET /api/passport/account`, `POST /api/passport/prepare` (amount 300, trigger 140%, 1 rescue), a wallet-style `signMessage` signature, and `POST /api/passport/submit`. The keeper relayed it and the module was enabled with the settings saved.
+- With the fork's price lowered to $70,000 (ratio 129.5%), the running service's keeper rescued the account on its own. Ratio 129.5% → 145.7%; the account's MUSD went 2,500 → 2,198.5 (300 repay + 1.50 fee).
+
+**Not yet done:**
+- the same flow on live testnet;
+- a real Unisat or OKX wallet signing through the page (the wallet calls are written to their documented `signMessage(message, "ecdsa")` API, but no real wallet has been tried yet).
+
+### VigilReserve v3: fixed rescue fee
 
 | Item | Value |
 |---|---|
@@ -31,7 +60,7 @@ v1 (`0x9829…cf3E`, below) stays deployed for its Wave 1 history.
 | What's new | Each executed rescue pays its submitter 0.5% of the amount, at most 25 MUSD, from the same reserve. The reserve must cover amount + fee. Constants, no owner. `Rescued` logs the fee. Everything else as v2 |
 | Fork tests | 19/19 pass (2026-11-04): the 17 above plus the fee schedule and "reserve must cover amount plus fee"; the allowed-rescue tests now also check the submitter received the fee |
 
-The service, web page and `scripts/keeper.ts` use v3. The redemption-guard proof below ran on v2, which has the same guard logic without the fee.
+The service used v3 until v4 replaced it on 2026-11-06. The redemption-guard proof below ran on v2, which has the same guard logic without the fee.
 
 ### Live redemption-guard rescue: 2026-11-04
 

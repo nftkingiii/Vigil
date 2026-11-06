@@ -1,13 +1,24 @@
 import { readFileSync } from "node:fs";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { getAddress, isAddress, isHex, toFunctionSelector, verifyTypedData } from "viem";
+import { encodeFunctionData, getAddress, isAddress, isHex, toFunctionSelector, verifyTypedData } from "viem";
 import { config } from "./config.ts";
-import { keeperStatus } from "./keeper.ts";
-import { addresses, client, mezoTestnet, repayTypedData, sigOpsAbi, vigilAbi } from "./mezo.ts";
+import { keeperAccount, keeperStatus, wallet } from "./keeper.ts";
+import {
+  addressType,
+  factoryAbi,
+  messageFor,
+  multiSendData,
+  PASSPORT,
+  safeAbi,
+  safeSignature,
+  truncatedBitcoinAddress,
+} from "./passport.ts";
+import { passportIssues, passportStatus } from "./passportKeeper.ts";
+import { addresses, client, explorerTx, mezoTestnet, moduleAbi, repayTypedData, sigOpsAbi, vigilAbi } from "./mezo.ts";
 import { latestSnapshot, monitorStatus } from "./monitor.ts";
 import { rescueIssues } from "./rescueHealth.ts";
-import { FEE_BPS, FEE_CAP, maxRepay, musd, pct, parseAmount, planLoan, position, repayToReach, rescueFee } from "./risk.ts";
+import { FEE_BPS, FEE_CAP, maxRepay, musd, parseAmount, parsePercent, pct, planLoan, position, repayToReach, rescueFee } from "./risk.ts";
 import { feedback, rescues, watches } from "./store.ts";
 import { notifyBorrower, telegramEnabled } from "./telegram.ts";
 
@@ -26,6 +37,7 @@ const pageConfig = {
   explorer: "https://explorer.test.mezo.org",
   musd: addresses.musd,
   vigilReserve: addresses.vigilReserve,
+  vigilSafeModule: addresses.vigilSafeModule,
   typedData: repayTypedData,
   selectors: {
     approve: toFunctionSelector("approve(address,uint256)"),
@@ -113,6 +125,7 @@ app.get("/api/position/:address", async (c) => {
       musdBalance,
       latestRescue: latest && { ...latest, signature: undefined },
       watched: watches.forBorrower(borrower).length > 0,
+      passport: await passportStatus(borrower).then((p) => (p ? { ...p, issues: passportIssues(p) } : null)).catch(() => null),
       steps: await Promise.all(
         rescues.armedFor(borrower).map(async (r) => ({
           id: r.id,
@@ -273,6 +286,140 @@ async function funnel() {
   funnelCache = { at: Date.now(), value };
   return value;
 }
+
+// ------------------------------------------------------------------ Mezo Passport opt-in
+
+const ZERO = "0x0000000000000000000000000000000000000000" as const;
+const SENTINEL = "0x0000000000000000000000000000000000000001" as const;
+const troveStatusAbi = [
+  { type: "function", name: "getTroveStatus", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint8" }] },
+] as const;
+
+interface Prepared {
+  safe: `0x${string}`;
+  owner: `0x${string}`;
+  to: `0x${string}`;
+  data: `0x${string}`;
+  operation: number;
+  pubkey: string;
+  type: NonNullable<ReturnType<typeof addressType>>;
+  at: number;
+}
+/** Safe txs Vigil built and will relay once the Bitcoin wallet signs them, keyed by safeTxHash. */
+const prepared = new Map<string, Prepared>();
+
+async function passportAccount(btcAddress: string, pubkey: string) {
+  const type = addressType(btcAddress);
+  if (!type) throw new Error("use a native SegWit (tb1q…/bc1q…), nested SegWit (2…/3…) or legacy (m…/n…/1…) address; Taproot isn't supported by Mezo Passport");
+  if (!/^(0x)?(02|03)[0-9a-fA-F]{64}$|^(0x)?04[0-9a-fA-F]{128}$/.test(pubkey)) throw new Error("public key must be 33 or 65 bytes of hex");
+  const truncated = truncatedBitcoinAddress(pubkey, type);
+  const [safe, owner] = await client.readContract({ address: PASSPORT.factory, abi: factoryAbi, functionName: "predictAddresses", args: [truncated] });
+  const code = await client.getCode({ address: safe });
+  return { type, truncated, safe, owner, deployed: !!code && code !== "0x" };
+}
+
+const errText = (e: unknown) => (e instanceof Error ? e.message.split("\n")[0]! : String(e));
+
+/** Which Mezo Passport account a Bitcoin wallet controls, and its Vigil status. */
+app.get("/api/passport/account", async (c) => {
+  try {
+    const a = await passportAccount(c.req.query("btcAddress") ?? "", c.req.query("pubkey") ?? "");
+    const status = a.deployed ? await passportStatus(a.safe) : null;
+    const trove = a.deployed ? await client.readContract({ address: addresses.troveManager, abi: troveStatusAbi, functionName: "getTroveStatus", args: [a.safe] }) : 0;
+    return c.json(json({ ...a, hasLoan: Number(trove) === 1, status: status && { ...status, issues: passportIssues(status) } }));
+  } catch (e) {
+    return c.json({ error: errText(e) }, 400);
+  }
+});
+
+/** Build the one Safe tx a Passport user signs: opt in (enable module + configure) or opt out. */
+app.post("/api/passport/prepare", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body) return c.json({ error: "invalid JSON" }, 400);
+  try {
+    const a = await passportAccount(String(body.btcAddress ?? ""), String(body.pubkey ?? ""));
+    if (!a.deployed) throw new Error(`no Mezo Passport account found for this wallet (expected ${a.safe}); open your loan in the Mezo app first`);
+    const owners = await client.readContract({ address: a.safe, abi: safeAbi, functionName: "getOwners" });
+    if (owners.length !== 1 || owners[0]!.toLowerCase() !== a.owner.toLowerCase()) throw new Error("that account isn't owned by this wallet's Bitcoin key");
+    const enabled = await client.readContract({ address: a.safe, abi: safeAbi, functionName: "isModuleEnabled", args: [addresses.vigilSafeModule] });
+
+    const calls: { to: `0x${string}`; data: `0x${string}` }[] = [];
+    let summary: string;
+    if (body.action === "off") {
+      calls.push({ to: addresses.vigilSafeModule, data: encodeFunctionData({ abi: moduleAbi, functionName: "configure", args: [0n, 0n, [], 0n] }) });
+      if (enabled) {
+        const [mods] = await client.readContract({ address: a.safe, abi: safeAbi, functionName: "getModulesPaginated", args: [SENTINEL, 20n] });
+        const i = mods.findIndex((m) => m.toLowerCase() === addresses.vigilSafeModule.toLowerCase());
+        const prev = i <= 0 ? SENTINEL : mods[i - 1]!;
+        calls.push({ to: a.safe, data: encodeFunctionData({ abi: safeAbi, functionName: "disableModule", args: [prev, addresses.vigilSafeModule] }) });
+      }
+      summary = "Turn off Vigil rescues and remove Vigil's module from your account.";
+    } else {
+      const amount = parseAmount(String(body.amount ?? ""));
+      if (!amount) throw new Error("amount must be a positive number of MUSD");
+      const guard = body.guard ? parseAmount(String(body.guard)) : 0n;
+      if (guard === null) throw new Error("guard must be a number of MUSD, or empty");
+      const triggers = (Array.isArray(body.triggers) ? body.triggers : String(body.triggers ?? "").split(","))
+        .map((t) => String(t).trim())
+        .filter(Boolean)
+        .map((t) => {
+          const v = parsePercent(t);
+          if (v === null || v <= 11n * 10n ** 17n || v > 5n * 10n ** 18n) throw new Error(`trigger ${t} must be above 110% and at most 500%`);
+          return v;
+        });
+      if (triggers.length === 0 && !guard) throw new Error("set at least one ratio trigger or a redemption guard");
+      const max = Number(body.maxRescues ?? Math.max(1, triggers.length));
+      if (!Number.isInteger(max) || max < 1 || max > 10) throw new Error("allow between 1 and 10 rescues");
+      const snap = latestSnapshot();
+      const trove = snap?.troves.find((t) => t.borrower.toLowerCase() === a.safe.toLowerCase());
+      if (snap && trove && amount > maxRepay(trove.principal + trove.interest, snap.system)) {
+        throw new Error(`that repay would take the loan under Mezo's minimum debt; the most it allows now is ${musd(maxRepay(trove.principal + trove.interest, snap.system))}`);
+      }
+      if (!enabled) calls.push({ to: a.safe, data: encodeFunctionData({ abi: safeAbi, functionName: "enableModule", args: [addresses.vigilSafeModule] }) });
+      calls.push({ to: addresses.vigilSafeModule, data: encodeFunctionData({ abi: moduleAbi, functionName: "configure", args: [amount, guard, triggers, BigInt(max)] }) });
+      const when = [
+        triggers.length ? `when the ratio falls below ${triggers.map((t) => pct(t, 0)).join(", then ")}` : "",
+        guard ? `when less than ${musd(guard)} of debt is ahead in the redemption queue` : "",
+      ].filter(Boolean);
+      summary = `${enabled ? "" : "Enable Vigil's module, and "}repay ${musd(amount)} from this account's MUSD (+${musd(rescueFee(amount), 2)} fee) ${when.join(" or ")}, up to ${max} time${max > 1 ? "s" : ""}.`;
+    }
+
+    const to = PASSPORT.multiSendCallOnly as `0x${string}`;
+    const data = multiSendData(calls);
+    const nonce = await client.readContract({ address: a.safe, abi: safeAbi, functionName: "nonce" });
+    const safeTxHash = await client.readContract({ address: a.safe, abi: safeAbi, functionName: "getTransactionHash", args: [to, 0n, data, 1, 0n, 0n, 0n, ZERO, ZERO, nonce] });
+    for (const [k, v] of prepared) if (Date.now() - v.at > 30 * 60_000) prepared.delete(k);
+    prepared.set(safeTxHash, { safe: a.safe, owner: a.owner, to, data, operation: 1, pubkey: String(body.pubkey), type: a.type, at: Date.now() });
+    return c.json({ safe: a.safe, safeTxHash, message: messageFor(safeTxHash), summary });
+  } catch (e) {
+    return c.json({ error: errText(e) }, 400);
+  }
+});
+
+/** Relay a prepared Safe tx once the Bitcoin wallet has signed its hash. Vigil's keeper pays the gas. */
+app.post("/api/passport/submit", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { safeTxHash?: string; signature?: string } | null;
+  const p = body?.safeTxHash ? prepared.get(body.safeTxHash) : undefined;
+  if (!p || !body?.signature) return c.json({ error: "unknown or expired request; prepare it again" }, 400);
+  try {
+    const signatures = safeSignature(p.owner, body.signature, p.pubkey, p.type);
+    const { request } = await client.simulateContract({
+      account: keeperAccount,
+      address: p.safe,
+      abi: safeAbi,
+      functionName: "execTransaction",
+      args: [p.to, 0n, p.data, p.operation, 0n, 0n, 0n, ZERO, ZERO, signatures],
+    });
+    const hash = await wallet.writeContract(request);
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: 120_000 });
+    prepared.delete(body.safeTxHash!);
+    if (receipt.status !== "success") return c.json({ error: "transaction reverted", txHash: hash }, 400);
+    await notifyBorrower(p.safe, `🛟 Your Passport account <code>${p.safe.slice(0, 6)}…${p.safe.slice(-4)}</code> updated its Vigil rescue settings. <a href="${explorerTx(hash)}">Transaction</a>`);
+    return c.json({ ok: true, txHash: hash, explorer: explorerTx(hash) });
+  } catch (e) {
+    return c.json({ error: `the account rejected it: ${errText(e)}` }, 400);
+  }
+});
 
 /** Public counts: how much Vigil is watching and has done. No addresses, no chat ids. */
 app.get("/api/stats", async (c) => {

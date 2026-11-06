@@ -81,6 +81,7 @@
     <button role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="false" tabindex="-1">Plan a loan</button>
     <button role="tab" id="tab-reserve" aria-controls="panel-reserve" aria-selected="false" tabindex="-1">Reserve</button>
     <button role="tab" id="tab-rescue" aria-controls="panel-rescue" aria-selected="false" tabindex="-1">Rescue</button>
+    <button role="tab" id="tab-btc" aria-controls="panel-btc" aria-selected="false" tabindex="-1">Bitcoin wallet</button>
     <button role="tab" id="tab-log" aria-controls="panel-log" aria-selected="false" tabindex="-1">Log</button>
   </div>
 
@@ -199,7 +200,7 @@
   <section role="tabpanel" id="panel-rescue" aria-labelledby="tab-rescue" hidden>
     <div class="card">
       <h2>Sign a rescue</h2>
-      <p class="sub"><b>Needs an EVM wallet</b> (MetaMask, Rabby) that owns the loan. Loans opened with a Bitcoin wallet through Mezo Passport belong to a smart account, which can't produce the signature Mezo checks; alerts still work for those.</p>
+      <p class="sub"><b>For EVM wallets</b> (MetaMask, Rabby) that own the loan. Signed in to Mezo with a Bitcoin wallet? Use the <b>Bitcoin wallet</b> tab instead.</p>
       <p class="sub">You sign Mezo's own <span class="mono">RepayMUSD</span> message. Mezo checks the signature, so Vigil can't change the amount, the loan or the deadline. If you sign any other Mezo action later, this rescue becomes void.</p>
       <ol class="steps">
         <li><b>Reserve</b> must cover the amount plus the rescue fee: 0.5% of the amount, at most 25 MUSD, paid to whoever submits the rescue. It's fixed in the contract.</li>
@@ -219,6 +220,43 @@
         <button id="addstep" class="ghost">Add next step</button>
       </div>
       <p class="muted" id="hint" style="margin:10px 0 0;font-size:13px"></p>
+    </div>
+  </section>
+
+  <!-- BITCOIN WALLET (Mezo Passport) -->
+  <section role="tabpanel" id="panel-btc" aria-labelledby="tab-btc" hidden>
+    <div class="card">
+      <h2>Rescue for Bitcoin-wallet (Mezo Passport) accounts</h2>
+      <p class="sub">If you sign in to Mezo with a Bitcoin wallet, your loan belongs to a Mezo Passport account (a Safe smart account your Bitcoin key controls). It can't sign Mezo's repay message, so instead you enable Vigil's rescue module once, with one signature from your Bitcoin wallet. The module can only repay your own loan from your account's own MUSD, under your trigger or guard, up to the number of times you allow, and you can turn it off the same way.</p>
+      <div class="row">
+        <button id="btc-unisat">Connect Unisat</button>
+        <button id="btc-okx" class="ghost">Connect OKX Wallet</button>
+      </div>
+    </div>
+    <div class="card" id="btc-acct" hidden>
+      <h2>Your account</h2>
+      <p class="sub" id="btc-acct-sub"></p>
+      <div class="grid" style="margin-top:10px">
+        <div class="stat"><div class="k">Vigil module</div><div class="v" id="btc-mod">–</div><div class="h" id="btc-mod-h"></div></div>
+        <div class="stat"><div class="k">MUSD in account</div><div class="v" id="btc-musd">–</div><div class="h">rescues repay from this</div></div>
+        <div class="stat"><div class="k">Rescues left</div><div class="v" id="btc-left">–</div><div class="h" id="btc-left-h"></div></div>
+      </div>
+    </div>
+    <div class="card" id="btc-setup" hidden>
+      <h2>Rescue settings</h2>
+      <div class="row">
+        <div><label for="btc-amt">Repay per rescue (MUSD)</label><input id="btc-amt" inputmode="decimal" placeholder="e.g. 300"></div>
+        <div><label for="btc-trg">Ratio triggers, in order (%)</label><input id="btc-trg" placeholder="e.g. 135, 125"></div>
+      </div>
+      <div class="row">
+        <div><label for="btc-grd">Redemption guard (MUSD ahead, optional)</label><input id="btc-grd" inputmode="decimal" placeholder="e.g. 50000"></div>
+        <div><label for="btc-max">Rescues allowed</label><input id="btc-max" inputmode="numeric" value="2"></div>
+      </div>
+      <div class="row">
+        <button id="btc-sign">Sign with Bitcoin wallet</button>
+        <button id="btc-off" class="ghost">Turn off</button>
+      </div>
+      <p class="muted" style="margin:10px 0 0;font-size:13px">Each rescue pays a 0.5% fee (max 25 MUSD) to whoever submits it. Keep the repay plus the fee in your account as MUSD. Vigil relays your signed transaction and pays its gas.</p>
     </div>
   </section>
 
@@ -473,6 +511,58 @@ async function plan() {
   log(d.ok ? "Plan ready. Nothing was sent; open the loan on Mezo when you're happy with it." : "Mezo would refuse this loan as entered: " + d.problems.join(" "));
 }
 $("plan").onclick = () => guarded(plan);
+// ---------- Bitcoin wallet (Mezo Passport)
+let btcWallet = null; // { name, address, pubkey, sign(text) -> base64 }
+async function connectBtc(kind) {
+  if (kind === "unisat") {
+    const w = window.unisat;
+    if (!w) throw new Error("Unisat isn't installed in this browser.");
+    const [address] = await w.requestAccounts();
+    btcWallet = { name: "Unisat", address, pubkey: await w.getPublicKey(), sign: (t) => w.signMessage(t, "ecdsa") };
+  } else {
+    const w = window.okxwallet && (window.okxwallet.bitcoinTestnet || window.okxwallet.bitcoin);
+    if (!w) throw new Error("OKX Wallet isn't installed in this browser.");
+    const res = await w.connect();
+    btcWallet = { name: "OKX", address: res.address, pubkey: res.publicKey || res.compressedPublicKey, sign: (t) => w.signMessage(t, "ecdsa") };
+  }
+  await loadBtc();
+}
+async function loadBtc() {
+  const q = new URLSearchParams({ btcAddress: btcWallet.address, pubkey: btcWallet.pubkey });
+  const r = await fetch(`/api/passport/account?${q}`);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "Couldn't find your Mezo account");
+  $("btc-acct").hidden = false;
+  $("btc-acct-sub").textContent = `${btcWallet.name} ${btcWallet.address} controls Mezo account ${d.safe}. ` +
+    (!d.deployed ? "It hasn't been used on Mezo yet: open your loan in the Mezo app first." : d.hasLoan ? "It has an active MUSD loan." : "It has no active MUSD loan yet.");
+  const s = d.status;
+  $("btc-mod").textContent = s && s.moduleEnabled ? "on" : "off";
+  $("btc-mod-h").textContent = s && s.moduleEnabled && s.triggers.length ? `triggers ${s.triggers.map((t) => pct(t, 0)).join(" → ")}` + (BigInt(s.guard) ? `, guard ${fmt(s.guard, 0)}` : "") : (s && BigInt(s.guard) ? `guard ${fmt(s.guard, 0)} MUSD` : "");
+  $("btc-musd").textContent = s ? fmt(s.musdBalance) + " MUSD" : "–";
+  $("btc-left").textContent = s ? String(s.rescuesLeft) : "–";
+  $("btc-left-h").textContent = s && BigInt(s.amount) ? `${fmt(s.amount, 0)} MUSD each` : "";
+  $("btc-setup").hidden = !d.deployed;
+  if (s && s.issues && s.issues.length) log("Rescue check:\n" + s.issues.map((i) => "• " + i.text).join("\n"));
+  else log(`Found your Mezo account ${d.safe}.`);
+  $("addr").value = d.safe;
+}
+async function btcSubmit(payload) {
+  if (!btcWallet) throw new Error("Connect your Bitcoin wallet first.");
+  const prep = await (await fetch("/api/passport/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ btcAddress: btcWallet.address, pubkey: btcWallet.pubkey, ...payload }) })).json();
+  if (prep.error) throw new Error(prep.error);
+  log(`${prep.summary}\n\nSign in ${btcWallet.name}. You're signing your account's transaction hash:\n${prep.message}`);
+  const signature = await btcWallet.sign(prep.message);
+  log("Signed. Vigil is relaying it…");
+  const res = await (await fetch("/api/passport/submit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ safeTxHash: prep.safeTxHash, signature }) })).json();
+  if (res.error) throw new Error(res.error);
+  log(`Done ✓\n${res.explorer}`);
+  await loadBtc();
+}
+$("btc-unisat").onclick = () => guarded(() => connectBtc("unisat"));
+$("btc-okx").onclick = () => guarded(() => connectBtc("okx"));
+$("btc-sign").onclick = () => guarded(() => btcSubmit({ amount: $("btc-amt").value.trim(), triggers: $("btc-trg").value, guard: $("btc-grd").value.trim().replace(/,/g, ""), maxRescues: Number($("btc-max").value) }));
+$("btc-off").onclick = () => guarded(() => btcSubmit({ action: "off" }));
+
 $("setguard").onclick = () => guarded(async () => {
   const v = $("grd").value.trim();
   if (!/^\d+(\.\d+)?$/.test(v)) throw new Error("Enter an amount of MUSD, or 0 to switch the guard off.");

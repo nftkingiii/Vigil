@@ -20,6 +20,7 @@ export const addresses = {
   borrowerOperationsSignatures: "0xD757e3646AF370b15f32EB557F0F8380Df7D639e",
   priceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366",
   vigilReserve: config.vigilReserve,
+  vigilSafeModule: config.vigilSafeModule,
 } as const;
 
 export const priceFeedAbi = parseAbi(["function fetchPrice() view returns (uint256)"]);
@@ -87,6 +88,25 @@ export const vigilAbi = parseAbi([
   "error NotTriggered(uint256 icr, uint256 trigger, bool found, uint256 debtAhead, uint256 guard)",
   "error BurnMismatch(uint256 expected, uint256 actual)",
   "error TransferFailed()",
+]);
+
+export const moduleAbi = parseAbi([
+  "function configOf(address safe) view returns (uint256 amount, uint256 guard, uint256 rescuesLeft, uint256 done)",
+  "function triggersOf(address safe) view returns (uint256[])",
+  "function activeTrigger(address safe) view returns (uint256)",
+  "function canRescue(address safe) view returns (bool ok, uint256 icr, uint256 price)",
+  "function configure(uint256 amount, uint256 guard, uint256[] triggers, uint256 maxRescues)",
+  "function rescue(address safe, address upperHint, address lowerHint)",
+  "event Configured(address indexed safe, uint256 amount, uint256 guard, uint256[] triggers, uint256 maxRescues)",
+  "event SafeRescued(address indexed safe, address indexed keeper, uint256 amount, uint256 price, uint256 icrBefore, uint256 icrAfter, uint8 reason, uint256 debtAhead, uint256 fee)",
+  "error ModuleNotEnabled()",
+  "error NoRescuesLeft()",
+  "error MusdTooLow(uint256 balance, uint256 needed)",
+  "error SafeCallFailed(bytes returnData)",
+  "error AboveTrigger(uint256 icr, uint256 trigger)",
+  "error NotTriggered(uint256 icr, uint256 trigger, bool found, uint256 debtAhead, uint256 guard)",
+  "error RescueOff()",
+  "error TroveNotActive()",
 ]);
 
 /** EIP-712 domain and type Mezo uses for a signed repay (BorrowerOperationsSignatures). */

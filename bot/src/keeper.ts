@@ -5,6 +5,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { config } from "./config.ts";
 import { short } from "./format.ts";
 import { repayHints } from "./hints.ts";
+import { runPassportKeeper } from "./passportKeeper.ts";
 import { addresses, client, explorerTx, mezoTestnet, sigOpsAbi, troveManagerAbi, TROVE_ACTIVE, vigilAbi } from "./mezo.ts";
 import { BLOCKING, issueKey, rescueIssues } from "./rescueHealth.ts";
 import { debtOf, musd, pct } from "./risk.ts";
@@ -23,7 +24,7 @@ function loadKeeperKey(): Hex {
 }
 
 export const keeperAccount = privateKeyToAccount(loadKeeperKey());
-const wallet = createWalletClient({ account: keeperAccount, chain: mezoTestnet, transport: http(config.rpcUrl) });
+export const wallet = createWalletClient({ account: keeperAccount, chain: mezoTestnet, transport: http(config.rpcUrl) });
 
 /** Mezo errors that mean the signature can never succeed. */
 const PERMANENT = [/Invalid signature/i, /Signature expired/i, /TroveNotActive/, /RescueOff/];
@@ -53,6 +54,11 @@ const CLOSED: Record<number, string> = {
  * never does.
  */
 export async function runKeeper(snap: Snapshot) {
+  await runEvmKeeper(snap);
+  await runPassportKeeper(snap, wallet).catch((e) => console.error("passport keeper:", e instanceof Error ? e.message.split("\n")[0] : e));
+}
+
+async function runEvmKeeper(snap: Snapshot) {
   const now = Math.floor(Date.now() / 1000);
 
   for (const r of rescues.armed()) {

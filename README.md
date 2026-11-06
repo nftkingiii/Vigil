@@ -7,7 +7,7 @@
 - Demo video (1:40): https://youtu.be/0sAUZjEPfE4
 - App: https://vigil-mezo.up.railway.app
 - Telegram: [@VigilMezoBot](https://t.me/VigilMezoBot)
-- Contract (Mezo testnet, verified): [`VigilReserve` v3 0x29FB…3885](https://explorer.test.mezo.org/address/0x29FB8a330cD5c114B30F0C69b50Bb459dE023885). Earlier: [v2 0x772d…B2c4](https://explorer.test.mezo.org/address/0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4) (redemption-guard proof), [v1 0x9829…cf3E](https://explorer.test.mezo.org/address/0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E) (Wave 1)
+- Contracts (Mezo testnet, verified): [`VigilReserve` v4 0xF968…E0EB](https://explorer.test.mezo.org/address/0xF968043b58Bf9993FE3ADC1157C7D186242DE0EB) for EVM wallets, [`VigilSafeModule` 0x1F5a…c7B3](https://explorer.test.mezo.org/address/0x1F5a0031Bfd7db38249eC8a4dcbc0FDA0e96c7B3) for Mezo Passport accounts. Earlier: [v3 0x29FB…3885](https://explorer.test.mezo.org/address/0x29FB8a330cD5c114B30F0C69b50Bb459dE023885) (fee), [v2 0x772d…B2c4](https://explorer.test.mezo.org/address/0x772dC64C23e579CaBA63D4f824379Cad19D2B2c4) (redemption-guard proof), [v1 0x9829…cf3E](https://explorer.test.mezo.org/address/0x9829963c86bf6A8AC47b0996eAD58cf3e630cf3E) (Wave 1)
 - Evidence (transactions, tests, read-backs): [`docs/evidence.md`](docs/evidence.md)
 
 ## The problem
@@ -32,6 +32,7 @@ Price alerts don't cover the second risk. Most of the time the fix is a small re
 | **Redemption threshold alert** | `/redemption 50000` in Telegram: Vigil alerts when less than that much other debt is ahead of you in the redemption queue, with the repay that would put twice that much back ahead of you, worked out from the real queue order. |
 | **Redemption guard** | A rescue can also start when less than your chosen amount of MUSD debt sits ahead of your loan in Mezo's redemption queue. `VigilReserve` walks `SortedTroves` on-chain the same way Mezo's redemption does, so the keeper can't fake it. Repaying moves the loan back in the queue. |
 | **Plan a loan** | Before borrowing, `/plan 0.05 2500` in Telegram or the web page's Plan tab shows what a loan would look like on Mezo right now: ratio, liquidation price, its spot in the redemption queue among today's loans, interest drift, and a suggested trigger, guard, repay and reserve. Mezo's borrowing fee, interest rate and minimums are read from its contracts. |
+| **Stepped rescues** | Several repays at lower and lower triggers, e.g. 300 MUSD at 135% and another 300 at 125%. EVM wallets sign each step with the next Mezo nonce, and `VigilReserve` applies that step's trigger on-chain; Passport accounts list their triggers in the module. |
 | **Pre-signed rescue** | You keep a MUSD reserve in `VigilReserve` and sign Mezo's own `RepayMUSD` message once. If your ratio falls below the trigger you set, the keeper submits exactly that repay. |
 
 ## Why the rescue is safe
@@ -48,7 +49,7 @@ The rescue goes through Mezo's `BorrowerOperationsSignatures.repayMUSDWithSignat
 
 All on Mezo testnet (chain 31611). Details and links are in [`docs/evidence.md`](docs/evidence.md).
 
-- **17/17 fork tests** against the real MUSD contracts: allowed rescues by ratio and by redemption guard, plus rejections for a stale oracle, a tampered amount, an expired signature, a moved nonce, a replay, a short reserve, rescue switched off, a guard not reached, a guard on a loan under 110%, and someone else withdrawing your reserve.
+- **34/34 fork tests** against the real MUSD contracts, including a real Mezo Passport account and an end-to-end Bitcoin-key flow (below). The VigilReserve tests cover: allowed rescues by ratio and by redemption guard, plus rejections for a stale oracle, a tampered amount, an expired signature, a moved nonce, a replay, a short reserve, rescue switched off, a guard not reached, a guard on a loan under 110%, and someone else withdrawing your reserve.
 - **Live redemption-guard rescue (2026-11-04, Wave 2):** with the ratio trigger off, the Railway keeper repaid 300 MUSD because only 25,882 MUSD of debt was ahead of the loan in Mezo's redemption queue (guard 60,000). The loan moved more than 60 troves back ([tx](https://explorer.test.mezo.org/tx/0x0f17ddb3de97630f65a72f25b59c8432e76ecdacb22bfad07bfee02a822c0c6a)). With the guard at 20,000 the same rescue was refused on-chain with `NotTriggered` ([tx](https://explorer.test.mezo.org/tx/0x4774df79fc352a33a7dddd1a97a9e3ddbf2c960e1c2d54d9d55a18852045d6e9)).
 - **Live ratio rescue (2026-10-16, Wave 1):** the Railway keeper repaid 300 MUSD from the reserve. Ratio went from 130.94% to 148.77% ([tx](https://explorer.test.mezo.org/tx/0x36505f769fecbff092c85736a9f09e1c9fc006bf4454d387effe70a8ad5e8347)).
 - **Live rejections:** `AboveTrigger` ([tx](https://explorer.test.mezo.org/tx/0x94b9e31e8c385f7459ec69c265a7c78dc924e0f5f60704fb8a79135f9a7417da)) and Mezo's `Invalid signature` for a tampered amount ([tx](https://explorer.test.mezo.org/tx/0x5400e79bbcf8e84252b8d37afbd2d6bd24c4c60f336ba638ccf4ac5366a77168)).
@@ -59,7 +60,10 @@ The test borrower's setup transactions were scripted (`scripts/live-demo.sh`); t
 
 Watch the **0x Mezo address that owns the loan** (the trove owner). If you sign in to Mezo with a Bitcoin wallet through Mezo Passport, that is the 0x smart account the Mezo app shows, not your `bc1…` address.
 
-Alerts work for any owner. The pre-signed rescue needs an EVM wallet (MetaMask, Rabby): Mezo checks rescue signatures with `ECDSA.recover(...) == borrower`, which a Passport smart account cannot satisfy.
+Alerts work for any owner. The rescue works for both kinds of owner:
+
+- **EVM wallet (MetaMask, Rabby):** you sign Mezo's own `RepayMUSD` message; `VigilReserve` submits it.
+- **Bitcoin wallet (Mezo Passport):** your loan belongs to a Safe v1.4.1 smart account owned by your Bitcoin key (OrangeKit's `BitcoinSafeOwner`, BIP-137 signatures). Mezo checks repay signatures with `ECDSA.recover`, which a smart account can't satisfy, so instead you enable **`VigilSafeModule`** once, with one Bitcoin-wallet signature on the web page's Bitcoin wallet tab (Unisat or OKX). That one signed Safe transaction is a MultiSend batch: enable the module and save your settings. The module can make your account call only `BorrowerOperations.repayMUSD` for its own loan, plus the fixed fee transfer, with plain calls to fixed addresses, under your trigger(s) or guard, up to the number of rescues you allowed. Turn it off the same way.
 
 ## Architecture
 

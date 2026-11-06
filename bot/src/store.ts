@@ -154,6 +154,19 @@ export const watches = {
   },
 };
 
+db.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+
+/** Small persistent key-value state (e.g. the last warning sent for a Passport account). */
+export const kv = {
+  get(k: string): string | null {
+    const row = db.prepare(`SELECT v FROM kv WHERE k = ?`).get(k) as Row | undefined;
+    return row ? String(row.v) : null;
+  },
+  set(k: string, v: string) {
+    db.prepare(`INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).run(k, v);
+  },
+};
+
 export const feedback = {
   add(chatId: number, text: string): number {
     return Number(db.prepare(`INSERT INTO feedback (chat_id, text) VALUES (?, ?)`).run(chatId, text.slice(0, 2000)).lastInsertRowid);
