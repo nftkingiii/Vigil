@@ -66,8 +66,37 @@ Same burner borrower ([`0x16f2981D…CB4f`](https://explorer.test.mezo.org/addre
 
 **Gas with the keeper's repay hints, live:** 455,853 and 438,753 gas for the two rescues. Before hints, the Oct 16 and Nov 4 rescues used 3,677,444 and 6,205,031.
 
+### Live Passport rescue: 2026-11-11
+
+A Bitcoin key with no Ethereum key got a Mezo Passport account, opened a loan from it, opted in through the live service, and was rescued by the live keeper, all on Mezo testnet. The account is [`0xd36b77…4561`](https://explorer.test.mezo.org/address/0xd36b77Cb3615217b20Bd18Cc42e56317c8064561), a Safe from Mezo's OrangeKitSafeFactory owned by a BitcoinSafeOwner. Its Bitcoin key is a throwaway demo key (native SegWit, never an address that holds coins).
+
+**What was scripted and what was live:**
+- **Scripted (our burner, our script):** the setup below, including the Bitcoin signatures. They were produced by a script that imitates a Bitcoin wallet's `signMessage(text, "ecdsa")`, not by a real Unisat or OKX wallet. The burner paid gas and relayed.
+- **Live service:** the opt-in went through the deployed Railway service's own `/api/passport/account`, `/prepare` and `/submit` endpoints, the same calls the web page makes. The service's keeper relayed it.
+- **Live keeper:** the rescue was submitted by the Railway keeper `0xBE8c12D0…3934`, not by our script.
+
+**Scripted setup:**
+
+| Step | Tx | Result |
+|---|---|---|
+| `deploySafe` on the factory (burner) | [`0xf30fac5e…28ec`](https://explorer.test.mezo.org/tx/0xf30fac5efb2b912eb66fcaea5fe03d3dabc0615b98536c2fc8e32f49d03c28ec) | ok, Passport account created |
+| Send 0.042 testnet BTC to the account | [`0x0682e635…0262`](https://explorer.test.mezo.org/tx/0x0682e635885cc232b8d52312507ecbec5fd4bf0140af9aa221b25522641e0262) | ok |
+| `openTrove` through a Bitcoin-signed Safe tx (collateral 0.04 BTC, debt 2,075 MUSD) | [`0x58a47a47…015b`](https://explorer.test.mezo.org/tx/0x58a47a4766b82e36113a4bafa1040e0941721cf508f822975f37327012f2015b) | ok, trove status 1. Debt 2,277.08 MUSD with fee and gas compensation, ratio 129.9% at $73,924 |
+
+**Opt-in through the live service** (script signs `message` with the simulated wallet, service relays): [`0x9a0037f0…bda9`](https://explorer.test.mezo.org/tx/0x9a0037f020f769074f85963bd288f43d5c6953eb36bcdb9dc11f5e9b2272bda9), block 16,712,463. One MultiSend batch: enable the module, then configure 100 MUSD, one rescue, trigger 134%. `isModuleEnabled` true, `configOf` = (100 MUSD, guard 0, 1 rescue left).
+
+**Rescue, submitted by the live keeper:** [`0xde2b57e1…4279`](https://explorer.test.mezo.org/tx/0xde2b57e191e4e50f8b0299e5e6823d4d5bde0cfb7ca3517f7dd14be0f5574279), block 16,712,466, 2026-11-11 11:11:55 UTC, within about a minute of the opt-in. `SafeRescued`: amount 100 MUSD, price $73,941.78, ICR **129.89% → 135.86%**, reason 1 (ratio), debt ahead 0, fee 0.50 MUSD. Gas 445,637.
+
+**Read-backs after the rescue:**
+
+| Item | Value |
+|---|---|
+| `configOf` | rescues left 0, done true |
+| Account MUSD balance | 2,075 → 1,974.50 (100 repay + 0.50 fee) |
+| Trove debt | 2,277.08 → 2,177.08 MUSD |
+| Collateral | 0.04 BTC |
+
 **Not yet done:**
-- the Passport flow on live testnet (it needs a Passport loan, about 0.04 testnet BTC);
 - a real Unisat or OKX wallet signing through the page (the wallet calls are written to their documented `signMessage(message, "ecdsa")` API, but no real wallet has been tried yet).
 
 ### VigilReserve v3: fixed rescue fee
